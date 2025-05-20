@@ -1,0 +1,8 @@
+# Virtual environments
+.venv/
+__pycache__/
+*.pyc
+
+# Datos y archivos temporales
+data/
+.env

@@ -1,0 +1,5 @@
+environs
+pandas
+requests
+playwright
+loguru
