@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 
 # Datos y archivos temporales
-data/+
+data/*
 .env
 
 # Asegurarse de que data exista
