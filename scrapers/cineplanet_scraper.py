@@ -1,11 +1,29 @@
 from playwright.sync_api import sync_playwright
 from base_scraper import BaseScraper
+from slugify import slugify
+import json, os
 
 
 class CineplanetScraper(BaseScraper):
 
+    # Función auxiliar que carga todas las películas
+    def load_all_movies(self, page):
+        page.wait_for_selector(".movies-list--view-more-button")
+
+        while True:
+            try:
+                button = page.query_selector(".movies-list--view-more-button")
+                if not button or not button.is_visible():
+                    break
+                button.click()
+                page.wait_for_timeout(1000)
+            except Exception as e:
+                print(f"Error al intentar hacer click en 'Ver más': {e}")
+                break
+
     def scrape(self, url: str):
         results = []
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
             page = browser.new_page()
@@ -19,25 +37,15 @@ class CineplanetScraper(BaseScraper):
             except Exception as e:
                 print("No se encontró botón de cookies o hubo un problema:", e)
 
-            page.wait_for_selector(".movies-list")
+            self.load_all_movies(page)
 
-            while True:
-                try:
-                    button = page.query_selector(
-                        ".movies-list--view-more-button-wrapper"
-                    )
-                    if not button or not button.is_visible():
-                        break
-                    button.click()
-                    page.wait_for_timeout(1000)
-                except Exception as e:
-                    print(f"Error al intentar hacer clic en 'Ver más': {e}")
-                    break
+            # Almacenar cada div que contiene toda la informació de la película
+            movies = page.query_selector_all(".movies-list--large-item")
 
-            # Extraer div container con información de la película
-            movies = page.query_selector_all(".movies-list--large-item-content-wrapper")
-
-            for movie in movies:
+            output_folder = "data/cineplanet"
+            os.makedirs(output_folder, exist_ok=True)
+            for i in range(len(movies)):
+                movie = movies[i]
                 # Diccionario para cada película
                 movie_data = {}
 
@@ -108,12 +116,12 @@ class CineplanetScraper(BaseScraper):
                     )
 
                     # Extraer formatos de proyección de la película
-                    formats = cine.query_selector_all(
+                    details = cine.query_selector_all(
                         ".cinema-showcases--sessions-details"
                     )
                     movie_data[cinema_name] = {}
-                    for format in formats:
-                        format_type = format.query_selector(
+                    for formats in details:
+                        format_type = formats.query_selector(
                             ".sessions-details--formats"
                         )
                         dimension = (
@@ -137,20 +145,30 @@ class CineplanetScraper(BaseScraper):
                             .inner_text()
                             .strip()
                         )
-                        movie_format = f"{dimension} {theather} {language}"
+                        movie_details = f"{dimension} {theather} {language}"
                         # Extraer horarios de proyección de la película
                         showtimes_list = []
-                        showtimes = format.query_selector_all(".showtime-selector--link")
+                        showtimes = formats.query_selector_all(
+                            ".showtime-selector--link"
+                        )
                         for showtime in showtimes:
                             showtimes_list.append(showtime.inner_text().strip())
-                        movie_data[cinema_name][movie_format] = showtimes_list
-                print(movie_data)
+                        movie_data[cinema_name][movie_details] = showtimes_list
+                # Guardar archivo JSON
+                file_path = os.path.join(
+                    output_folder, f"{slugify(movie_data['title'])}.json"
+                )
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(movie_data, f, ensure_ascii=False, indent=4)
+                # Vover a la página anterior (cartelera)
+                page.go_back()
+                page.wait_for_selector(".movies-list--large-item")
+                self.load_all_movies(page)
+                movies = page.query_selector_all(".movies-list--large-item")
 
             browser.close()
         return results
 
 
 if __name__ == "__main__":
-    scraper = CineplanetScraper()
-    movies = scraper.scrape("https://www.cineplanet.com.pe/peliculas")
-    print(movies)
+    CineplanetScraper().scrape("https://www.cineplanet.com.pe/peliculas")
