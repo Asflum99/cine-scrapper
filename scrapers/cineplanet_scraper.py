@@ -1,4 +1,4 @@
-from playwright.sync_api import sync_playwright, Page
+from playwright.sync_api import sync_playwright, Page, ElementHandle
 from scrapers.base_scraper import BaseScraper
 from scrapers.utils.browser_utils import (
     setup_browser_and_load_page,
@@ -6,7 +6,7 @@ from scrapers.utils.browser_utils import (
     enter_movie_details_page,
 )
 from slugify import slugify
-from typing import List
+from typing import List, Tuple
 import json, os
 
 
@@ -19,6 +19,75 @@ class CineplanetScraper(BaseScraper):
                 button.click()
         except Exception as e:
             print("No se encontró botón de cookies o hubo un problema:", e)
+
+    def apply_filters(self, page: Page):
+        filters = page.query_selector_all(".movies-filter--filter-category-accordion")
+        city_filter_added = False
+        day_filter_added = False
+        for filter in filters:
+            # Aplicar filtros de ciudad
+            if not city_filter_added:
+                if (
+                    filter.query_selector(
+                        ".movies-filter--filter-category-accordion-trigger h3"
+                    )
+                    .inner_text()
+                    .strip()
+                    == "Ciudad"
+                ):
+                    # Activar acordeón
+                    classes = filter.get_attribute("class")
+                    if "accordion_expanded" not in classes:
+                        filter.click()
+
+                    cities = filter.query_selector_all(
+                        ".movies-filter--filter-category-list-item-label"
+                    )
+                    # Aplicar filtros para Lima
+                    for city in cities:
+                        if city.inner_text().strip() == "Lima":
+                            city.click()
+                            page.wait_for_function(
+                                """() => {
+                                    const chips = document.querySelectorAll('.movies-chips--chip');
+                                    return Array.from(chips).some(chip => chip.innerText.includes('Lima'));
+                                }"""
+                            )
+                        break
+                    city_filter_added = True
+                    continue
+            # Aplicar filtros de día
+            if not day_filter_added:
+                if (
+                    filter.query_selector(
+                        ".movies-filter--filter-category-accordion-trigger h3"
+                    )
+                    .inner_text()
+                    .strip()
+                    == "Día"
+                ):
+                    # Activar acordeón
+                    classes = filter.get_attribute("class")
+                    if "accordion_expanded" not in classes:
+                        filter.click()
+
+                    days = filter.query_selector_all(
+                        ".movies-filter--filter-category-list-item-label"
+                    )
+                    # Aplicar filtros para día de hoy
+                    for day in days:
+                        if "Hoy" in day.inner_text().strip():
+                            print(day)
+                            day.click()
+                            page.wait_for_function(
+                                """() => {
+                                    const chips = document.querySelectorAll('.movies-chips--chip');
+                                    return Array.from(chips).some(chip => chip.innerText.includes('Hoy'));
+                                }"""
+                            )
+                        break
+                    day_filter_added = True
+                    break
 
     def load_all_movies(self, page: Page):
         page.wait_for_selector(".movies-list--view-more-button")
@@ -34,57 +103,63 @@ class CineplanetScraper(BaseScraper):
                 print(f"Error al intentar hacer click en 'Ver más': {e}")
                 break
 
-    def extract_data_for_dictionary(self, page: Page, movie_data: dict):
+    def scrape_showtimes_data(self, page: Page, movie_data: dict):
         cinemas = page.query_selector_all(".film-detail-showtimes--accordion")
         showtimes_by_cinema: dict = {}
         for cine in cinemas:
-            # Extraer nombre del cine
-            cinemas_containers = cine.query_selector_all(
-                ".cinema-showcases--sessions-details"
-            )
-            cinema_name = (
-                cine.query_selector(".cinema-showcases--summary-name")
-                .inner_text()
-                .strip()
-            )
-            raw_data: List = []
-            for cinema_container in cinemas_containers:
-                formats = cinema_container.query_selector(".sessions-details--formats")
-                dimension = (
-                    formats.query_selector(".sessions-details--formats-dimension")
-                    .inner_text()
-                    .strip()
-                )
-                theather = (
-                    formats.query_selector(".sessions-details--formats-theather")
-                    .inner_text()
-                    .strip()
-                )
-                language = (
-                    formats.query_selector(".sessions-details--formats-language")
-                    .inner_text()
-                    .strip()
-                )
-                showtimes = []
-                showtimes_list = cinema_container.query_selector_all(
-                    ".sessions-details--session-item"
-                )
-                for showtime in showtimes_list:
-                    showtimes.append(
-                        showtime.query_selector(".showtime-selector--link")
-                        .inner_text()
-                        .strip()
-                    )
-                raw_data.append(
-                    {
-                        "dimension": dimension,
-                        "format": theather,
-                        "language": language,
-                        "showtimes": showtimes,
-                    }
-                )
+            cinema_name, raw_data = self._parse_showtimes_for_cinema(cine)
             showtimes_by_cinema[cinema_name] = raw_data
         movie_data["showtimes"] = showtimes_by_cinema
+
+    def _parse_showtimes_for_cinema(
+        self, cine: ElementHandle
+    ) -> Tuple[str, List[dict]]:
+        cinemas_containers = cine.query_selector_all(
+            ".cinema-showcases--sessions-details"
+        )
+        cinema_name = self._extract_cinema_name(cine)
+        raw_data: List = []
+        for cinema_container in cinemas_containers:
+            showtime_block = self._build_showtime_entry(cinema_container)
+            raw_data.append(showtime_block)
+        return cinema_name, raw_data
+
+    def _extract_cinema_name(self, cine: ElementHandle) -> str:
+        return (
+            cine.query_selector(".cinema-showcases--summary-name").inner_text().strip()
+        )
+
+    def _build_showtime_entry(self, cinema_container: ElementHandle) -> dict:
+        formats = cinema_container.query_selector(".sessions-details--formats")
+        dimension = (
+            formats.query_selector(".sessions-details--formats-dimension")
+            .inner_text()
+            .strip()
+        )
+        theather = (
+            formats.query_selector(".sessions-details--formats-theather")
+            .inner_text()
+            .strip()
+        )
+        language = (
+            formats.query_selector(".sessions-details--formats-language")
+            .inner_text()
+            .strip()
+        )
+        showtimes = []
+        showtimes_list = cinema_container.query_selector_all(
+            ".sessions-details--session-item"
+        )
+        for showtime in showtimes_list:
+            showtimes.append(
+                showtime.query_selector(".showtime-selector--link").inner_text().strip()
+            )
+        return {
+            "dimension": dimension,
+            "format": theather,
+            "language": language,
+            "showtimes": showtimes,
+        }
 
     def save_json(self, output_folder, movie_data):
         file_path = os.path.join(output_folder, f"{slugify(movie_data['title'])}.json")
@@ -100,16 +175,8 @@ class CineplanetScraper(BaseScraper):
             # Aceptar cookies del sitio
             self.accept_cookies(page)
 
-            # Seleccionar Lima como ciudad
-            cities = page.query_selector_all(
-                ".movies-filter--filter-category-list-item-label"
-            )
-            for city in cities:
-                if city.inner_text().strip() == "Lima":
-                    city.click()
-
-            # Seleccionar el presente día
-            days = page.query_selector_all(".")
+            # Aplicar filtros
+            self.apply_filters(page)
 
             # Presionar el botón "Ver más películas" para cargar toda la cartelera
             self.load_all_movies(page)
@@ -134,6 +201,13 @@ class CineplanetScraper(BaseScraper):
                     ", ",
                 )
 
+                filters = page.query_selector_all(".movies-chips--chip")
+                for i, filter in enumerate(filters):
+                    if i == 0:
+                        movie_data["city"] = filter.inner_text().strip()
+                    else:
+                        movie_data["day"] = filter.inner_text().strip()
+
                 # Ingresar a la página específica de la película
                 enter_movie_details_page(
                     movie,
@@ -143,7 +217,7 @@ class CineplanetScraper(BaseScraper):
                 )
 
                 # Extraer datos para luego armar diccionario
-                self.extract_data_for_dictionary(page, movie_data)
+                self.scrape_showtimes_data(page, movie_data)
 
                 # Guardar toda la información en un archivo JSON
                 self.save_json(output_folder, movie_data)
