@@ -20,74 +20,92 @@ class CineplanetScraper(BaseScraper):
         except Exception as e:
             print("No se encontró botón de cookies o hubo un problema:", e)
 
-    def apply_filters(self, page: Page):
+    def apply_filters(self, page: Page) -> List[str]:
         filters = page.query_selector_all(".movies-filter--filter-category-accordion")
         city_filter_added = False
         day_filter_added = False
+        data: List = []
         for filter in filters:
-            # Aplicar filtros de ciudad
             if not city_filter_added:
-                if (
-                    filter.query_selector(
-                        ".movies-filter--filter-category-accordion-trigger h3"
-                    )
-                    .inner_text()
-                    .strip()
-                    == "Ciudad"
-                ):
-                    # Activar acordeón
-                    classes = filter.get_attribute("class")
-                    if "accordion_expanded" not in classes:
-                        filter.click()
-
-                    cities = filter.query_selector_all(
-                        ".movies-filter--filter-category-list-item-label"
-                    )
-                    # Aplicar filtros para Lima
-                    for city in cities:
-                        if city.inner_text().strip() == "Lima":
-                            city.click()
-                            page.wait_for_function(
-                                """() => {
-                                    const chips = document.querySelectorAll('.movies-chips--chip');
-                                    return Array.from(chips).some(chip => chip.innerText.includes('Lima'));
-                                }"""
-                            )
-                        break
-                    city_filter_added = True
+                # Aplicar filtros de ciudad
+                raw_data = self._apply_specific_filter(
+                    filter,
+                    "Ciudad",
+                    page,
+                )
+                city, city_filter_added = raw_data
+                if city_filter_added:
+                    data.append(city)
                     continue
-            # Aplicar filtros de día
             if not day_filter_added:
-                if (
-                    filter.query_selector(
-                        ".movies-filter--filter-category-accordion-trigger h3"
-                    )
-                    .inner_text()
-                    .strip()
-                    == "Día"
-                ):
-                    # Activar acordeón
-                    classes = filter.get_attribute("class")
-                    if "accordion_expanded" not in classes:
-                        filter.click()
-
-                    days = filter.query_selector_all(
-                        ".movies-filter--filter-category-list-item-label"
-                    )
-                    # Aplicar filtros para día de hoy
-                    for day in days:
-                        if "Hoy" in day.inner_text().strip():
-                            print(day)
-                            day.click()
-                            page.wait_for_function(
-                                """() => {
-                                    const chips = document.querySelectorAll('.movies-chips--chip');
-                                    return Array.from(chips).some(chip => chip.innerText.includes('Hoy'));
-                                }"""
-                            )
-                        break
-                    day_filter_added = True
+                # Aplicar filtros de día
+                raw_data = self._apply_specific_filter(filter, "Día", page)
+                day, day_filter_added = raw_data
+                if day_filter_added:
+                    data.append(day)
                     break
+        return data
+
+    def _apply_specific_filter(
+        self,
+        filter: ElementHandle,
+        specific_filter: str,
+        page: Page,
+    ) -> Tuple[str, bool]:
+        title_element = filter.query_selector(
+            ".movies-filter--filter-category-accordion-trigger h3"
+        )
+        if not title_element:
+            return ("Missing filter title", False)
+        if title_element.inner_text().strip() == specific_filter:
+            # Activar acordeón
+            classes = filter.get_attribute("class")
+            if "accordion_expanded" not in classes:
+                filter.click()
+
+            cities = filter.query_selector_all(
+                ".movies-filter--filter-category-list-item-label"
+            )
+
+            # Escoger filtro
+            if specific_filter == "Ciudad":
+                city, city_selected = self._select_city(cities, page)
+                return (city, city_selected)
+            elif specific_filter == "Día":
+                day, day_selected = self._select_day(cities, page)
+                return (day, day_selected)
+        return ("Filters don't matches", False)
+
+    def _select_city(self, cities: List[ElementHandle], page: Page) -> Tuple[str, bool]:
+        city_chosen = slugify(input("Escoja una ciudad: ")).strip().lower()
+        for city in cities:
+            city_text = slugify(city.inner_text().strip())
+            if city_text == city_chosen:
+                city.click()
+                page.wait_for_function(
+                    f"""() => {{
+                        const chips = document.querySelectorAll('.movies-chips--chip');
+                        return Array.from(chips).some(chip => chip.innerText.includes("{city_text}"));
+                    }}"""
+                )
+                return (city_text, True)
+        return ("No match found", False)
+
+    def _select_day(self, days: List[ElementHandle], page: Page) -> Tuple[str, bool]:
+        day_chosen = slugify(input("Escoja un día: ").strip().lower())
+        for day in days:
+            day_text = slugify(day.inner_text().strip())
+            if day_chosen in day_text:
+                day.click()
+                day_text = day.inner_text().strip()
+                page.wait_for_function(
+                    f"""() => {{
+                        const chips = document.querySelectorAll('.movies-chips--chip');
+                        return Array.from(chips).some(chip => chip.innerText.includes("{day_text}"));
+                    }}"""
+                )
+                return (day_text, True)
+        return ("No match found", False)
 
     def load_all_movies(self, page: Page):
         page.wait_for_selector(".movies-list--view-more-button")
@@ -176,7 +194,7 @@ class CineplanetScraper(BaseScraper):
             self.accept_cookies(page)
 
             # Aplicar filtros
-            self.apply_filters(page)
+            city, day = self.apply_filters(page)
 
             # Presionar el botón "Ver más películas" para cargar toda la cartelera
             self.load_all_movies(page)
@@ -184,8 +202,13 @@ class CineplanetScraper(BaseScraper):
             # Almacenar cada div que contiene toda la informació de la película
             movies = page.query_selector_all(".movies-list--large-item")
 
-            output_folder = "data/cineplanet"
+            # Crear ruta de carpetas
+            city_slugify = slugify(city)
+            day_slugify = slugify(day, separator="_")
+            output_folder = f"data/{city_slugify}/cineplanet/{day_slugify}"
             os.makedirs(output_folder, exist_ok=True)
+
+            # Iterar sobre cada película
             for i in range(len(movies)):
                 movie = movies[i]
                 # Diccionario para cada película
