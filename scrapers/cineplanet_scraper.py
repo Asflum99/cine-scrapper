@@ -79,8 +79,8 @@ class CineplanetScraper(BaseScraper):
     def _select_city(self, cities: List[ElementHandle], page: Page) -> Tuple[str, bool]:
         city_chosen = slugify(input("Escoja una ciudad: ")).strip().lower()
         for city in cities:
-            city_text = slugify(city.inner_text().strip())
-            if city_text == city_chosen:
+            city_text = city.inner_text().strip()
+            if slugify(city_text) == city_chosen:
                 city.click()
                 page.wait_for_function(
                     f"""() => {{
