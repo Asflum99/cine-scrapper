@@ -86,12 +86,17 @@ class CineplanetScraper(BaseScraper):
         return ("Filters don't matches", False)
 
     def _select_city(self, cities: List[ElementHandle], page: Page) -> Tuple[str, bool]:
-        # Pedirle al usuario que ingrese una ciudad
-        city_chosen = slugify(input("Escoja una ciudad: ")).strip().lower()
+        # Imprime la lista de ciudades disponibles
+        self._print_list_of_items(cities)
+        # Pedirle al usuario que seleccione una ciudad
+        city_chosen = int(input("Seleccione el número de ciudad: ").strip())
         for city in cities:
             city_text = city.inner_text().strip()
             # Verificar si la ciudad ingresada por el usuario coincide con las opciones de Cineplanet
-            if slugify(city_text) == city_chosen:
+            if (
+                city.inner_text().strip()
+                == cities[city_chosen - 1].inner_text().strip()
+            ):
                 city.click()
                 page.wait_for_function(
                     f"""() => {{
@@ -105,21 +110,9 @@ class CineplanetScraper(BaseScraper):
     def _select_cinema(
         self, cinemas: List[ElementHandle], page: Page
     ) -> Tuple[str, bool]:
-        length = []
-        for cine in cinemas:
-            length.append(len(cine.inner_text().strip()))
-        # Imprime la lista de cines que tiene Cineplanet, según la ciudad escogida
-        max_length = max(length)
-        width_length = max_length + 4
-        for i in range(0, len(cinemas), 3):
-            fila = ""
-            for j in range(3):
-                idx = i + j
-                if idx < len(cinemas):
-                    cine = f"{idx + 1}) {cinemas[idx].inner_text().strip()}"
-                    fila += cine.ljust(width_length)
-            print(fila)
-        # Se le pide al usuario escoger un cine
+        # Imprime la lista de cines disponibles
+        self._print_list_of_items(cinemas)
+        # Se le pide al usuario seleccionar un cine
         cinema_chosen = int(input("Seleccione el número del cine: ").strip())
         for cine in cinemas:
             if (
@@ -138,11 +131,12 @@ class CineplanetScraper(BaseScraper):
         return ("No match found", False)
 
     def _select_day(self, days: List[ElementHandle], page: Page) -> Tuple[str, bool]:
-        # Se le pide al usuario escoger un día
-        day_chosen = slugify(input("Escoja un día: ").strip().lower())
+        # Imprime la lista de días disponibles
+        self._print_list_of_items(days)
+        # Se le pide al usuario seleccionar un día
+        day_chosen = int(input("Seleccione el número de día: ").strip())
         for day in days:
-            day_text = slugify(day.inner_text().strip())
-            if day_chosen in day_text:
+            if day.inner_text().strip() == days[day_chosen - 1].inner_text().strip():
                 day.click()
                 day_text = day.inner_text().strip()
                 page.wait_for_function(
@@ -153,6 +147,22 @@ class CineplanetScraper(BaseScraper):
                 )
                 return (day_text, True)
         return ("No match found", False)
+
+    def _print_list_of_items(self, items: List[ElementHandle]):
+        # Imprime la lista de items que se le pase
+        length = []
+        for item in items:
+            length.append(len(item.inner_text().strip()))
+        max_length = max(length)
+        width_length = max_length + 4
+        for i in range(0, len(items), 3):
+            fila = ""
+            for j in range(3):
+                idx = i + j
+                if idx < len(items):
+                    item = f"{idx + 1}) {items[idx].inner_text().strip()}"
+                    fila += item.ljust(width_length)
+            print(fila)
 
     def load_all_movies(self, page: Page):
         # Si hay botón de "Ver más", se presiona. De lo contrario, se salta la función
@@ -293,6 +303,12 @@ class CineplanetScraper(BaseScraper):
         try:
             previous_url = page.url
             clickable_element.click()
+
+            # Presionar el botón de confirmación de compra en caso aparezca
+            confirm_purchase = page.query_selector(".call-to-action_rounded-solid.call-to-action_pink-solid.call-to-action_large")
+            if confirm_purchase:
+                confirm_purchase.click()
+            
             page.wait_for_url(expected_new_url, timeout=10000)
             page.wait_for_selector(wait_for_selector_new_page, timeout=10000)
             current_url = page.url
