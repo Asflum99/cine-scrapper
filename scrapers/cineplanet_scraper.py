@@ -7,8 +7,11 @@ from scrapers.utils.browser_utils import (
 )
 from slugify import slugify
 from typing import List, Tuple
-from rich.progress import track
+from rich.text import Text
+from rich.console import Console
 import json, os, asyncio, pandas
+
+console = Console()
 
 
 class CineplanetScraper(BaseScraper):
@@ -115,7 +118,10 @@ class CineplanetScraper(BaseScraper):
     async def _ask_user_for_input(
         self, items: List[ElementHandle], page: Page, filter: str
     ):
+        print()
         item_chosen = int(input(f"Seleccione el número de {filter}: ").strip())
+        print()
+        console.rule("")
         for item in items:
             if (await item.inner_text()).strip() == (
                 await items[item_chosen - 1].inner_text()
@@ -135,16 +141,20 @@ class CineplanetScraper(BaseScraper):
         self._print_list_of_items(strings)
 
     def _print_list_of_items(self, items: List[str]):
+        print()
         max_length = max(len(item) for item in items)
-        width_length = max_length + 4
+        width_length = max_length + 8
         for i in range(0, len(items), 3):
-            fila = ""
+            fila = Text()
             for j in range(3):
                 idx = i + j
                 if idx < len(items):
-                    item = f"{idx + 1}) {items[idx]}"
-                    fila += item.ljust(width_length)
-            print(fila)
+                    item = Text()
+                    item.append(Text(f"{idx + 1}) ", style="cyan bold"))
+                    item.append(Text(f"{items[idx]}", style="none"))
+                    item.pad_right(width_length - len(item.plain))
+                    fila.append(item)
+            console.print(fila)
 
     async def load_all_movies(self, page: Page):
         # Si hay botón de "Ver más", se presiona. De lo contrario, se salta la función
@@ -368,9 +378,13 @@ class CineplanetScraper(BaseScraper):
     async def message_if_takes_time(self):
         try:
             await asyncio.sleep(5)
-            print("Espera un momento, es que hay muchas funciones por recopilar.")
+            console.print(
+                "Espere un momento, es que hay [cyan]muchos horarios[/] por recopilar."
+            )
             await asyncio.sleep(17)
-            print("Vaya, sí que hay demasiadas funciones para esta película.")
+            console.print(
+                "Vaya, sí que hay [bold cyan]demasiados horarios[/] para esta película."
+            )
         except asyncio.CancelledError:
             pass
 
@@ -378,7 +392,9 @@ class CineplanetScraper(BaseScraper):
 
         async with async_playwright() as p:
             # Abrir navegador y página web
-            browser, page = await setup_browser_and_load_page(p, url, 'button:has-text("Aceptar Cookies")')
+            browser, page = await setup_browser_and_load_page(
+                p, url, 'button:has-text("Aceptar Cookies")'
+            )
 
             # Aceptar cookies del sitio
             await self.accept_cookies(page)
@@ -399,6 +415,7 @@ class CineplanetScraper(BaseScraper):
             formats = {"JSON": self.save_json, "Excel": self.save_excel}
             formats_keys = list(formats.keys())
             self._print_list_of_items(formats_keys)
+            print()
             format_choice = int(
                 input(
                     "Escoja el número de formato en el que desea guardar la información: "
@@ -414,58 +431,68 @@ class CineplanetScraper(BaseScraper):
             movies = await page.query_selector_all(".movies-list--large-item")
 
             # Iterar sobre cada película
-            for i in track(range(len(movies)), description="Recopilando información de películas"):
-                movie = movies[i]
-                # Diccionario para cada película
-                movie_data = {}
+            with console.status(
+                "[bold green]Recopilando información de películas...[/]",
+                spinner="bouncingBall",
+                spinner_style="bold green",
+            ):
 
-                # Extraer información general de la películas
-                await extract_general_information(
-                    movie,
-                    movie_data,
-                    ".movies-list--large-movie-description-title",
-                    ".movies-list--large-movie-description-extra",
-                    ".image-loader--image_loaded",
-                    ", ",
+                for i in range(len(movies)):
+                    movie = movies[i]
+                    # Diccionario para cada película
+                    movie_data = {}
+
+                    # Extraer información general de la películas
+                    await extract_general_information(
+                        movie,
+                        movie_data,
+                        ".movies-list--large-movie-description-title",
+                        ".movies-list--large-movie-description-extra",
+                        ".image-loader--image_loaded",
+                        ", ",
+                    )
+
+                    filters = await page.query_selector_all(".movies-chips--chip")
+                    for i, filter in enumerate(filters):
+                        if i == 0:
+                            movie_data["city"] = (await filter.inner_text()).strip()
+                        elif i == 1:
+                            movie_data["cinema"] = (await filter.inner_text()).strip()
+                        else:
+                            movie_data["day"] = (await filter.inner_text()).strip()
+
+                    # Ingresar a la página específica de la película
+                    console.print(
+                        f"\n[cyan]▶️ Recopilando horarios de proyección de [bold]{movie_data['title']}[/bold][/cyan]"
+                    )
+                    await enter_movie_details_page(
+                        movie,
+                        page,
+                        ".movie-info-details--second-button",
+                        ".movie-details--info",
+                    )
+
+                    # Extraer datos para luego armar diccionario
+                    wait_message = asyncio.create_task(self.message_if_takes_time())
+                    await self.scrape_showtimes_data(page, movie_data)
+                    wait_message.cancel()
+
+                    # Guardar la información según el formato escogido
+                    function_to_execute(output_folder, movie_data)
+                    console.print(
+                        f"[green]✅ Horarios de [bold]{movie_data['title']}[/bold] guardados[/green]"
+                    )
+
+                    # Vover a la página anterior (cartelera)
+                    await page.go_back()
+                    await page.wait_for_selector(".movies-list--large-item")
+                    await self.load_all_movies(page)
+                    movies = await page.query_selector_all(".movies-list--large-item")
+
+                console.print(
+                    "\n[bold green]🎉 ¡Todos los horarios han sido guardados exitosamente![/bold green]"
                 )
-
-                filters = await page.query_selector_all(".movies-chips--chip")
-                for i, filter in enumerate(filters):
-                    if i == 0:
-                        movie_data["city"] = (await filter.inner_text()).strip()
-                    elif i == 1:
-                        movie_data["cinema"] = (await filter.inner_text()).strip()
-                    else:
-                        movie_data["day"] = (await filter.inner_text()).strip()
-
-                # Ingresar a la página específica de la película
-                print(f"Recopilando horarios de proyección de {movie_data['title']}...")
-                await enter_movie_details_page(
-                    movie,
-                    page,
-                    ".movie-info-details--second-button",
-                    ".movie-details--info",
-                )
-
-                # Extraer datos para luego armar diccionario
-                wait_message = asyncio.create_task(self.message_if_takes_time())
-                await self.scrape_showtimes_data(page, movie_data)
-                wait_message.cancel()
-
-                # Guardar la información según el formato escogido
-                function_to_execute(output_folder, movie_data)
-                print(f"Horarios de {movie_data["title"]} guardados")
-
-                # Vover a la página anterior (cartelera)
-                await page.go_back()
-                await page.wait_for_selector(".movies-list--large-item")
-                await self.load_all_movies(page)
-                movies = await page.query_selector_all(".movies-list--large-item")
-
-            print(
-                f"Todos los horarios de las películas disponibles en {movie_data["cinema"]} para {movie_data["day"]} han sido guardados exitosamente."
-            )
-            await browser.close()
+                await browser.close()
 
 
 if __name__ == "__main__":
