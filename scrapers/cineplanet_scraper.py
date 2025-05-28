@@ -7,6 +7,7 @@ from scrapers.utils.browser_utils import (
 )
 from slugify import slugify
 from typing import List, Tuple
+from rich.progress import track
 import json, os, asyncio, pandas
 
 
@@ -15,8 +16,8 @@ class CineplanetScraper(BaseScraper):
     async def accept_cookies(self, page: Page):
         # Espera y hace clic en el botón "Aceptar Cookies" para cerrar el aviso, si existe
         try:
-            button = await page.wait_for_selector('button:has-text("Aceptar Cookies")')
-            if button and (await button.inner_text()).strip() == "Aceptar Cookies":
+            button = await page.query_selector('button:has-text("Aceptar Cookies")')
+            if button and await button.is_visible():
                 await button.click()
         except Exception as e:
             print("No se encontró botón de cookies o hubo un problema:", e)
@@ -377,7 +378,7 @@ class CineplanetScraper(BaseScraper):
 
         async with async_playwright() as p:
             # Abrir navegador y página web
-            browser, page = await setup_browser_and_load_page(p, url)
+            browser, page = await setup_browser_and_load_page(p, url, 'button:has-text("Aceptar Cookies")')
 
             # Aceptar cookies del sitio
             await self.accept_cookies(page)
@@ -413,7 +414,7 @@ class CineplanetScraper(BaseScraper):
             movies = await page.query_selector_all(".movies-list--large-item")
 
             # Iterar sobre cada película
-            for i in range(len(movies)):
+            for i in track(range(len(movies)), description="Recopilando información de películas"):
                 movie = movies[i]
                 # Diccionario para cada película
                 movie_data = {}

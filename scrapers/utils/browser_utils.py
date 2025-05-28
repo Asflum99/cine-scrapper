@@ -1,11 +1,21 @@
 from playwright.async_api import ElementHandle, Playwright, Browser, Page
 from typing import List, Tuple
+import asyncio
 
 
-async def setup_browser_and_load_page(p: Playwright, url: str) -> Tuple[Browser, Page]:
+async def setup_browser_and_load_page(p: Playwright, url: str, selector_check: str) -> Tuple[Browser, Page]:
     browser = await p.chromium.launch(headless=False)
     page = await browser.new_page()
     await page.goto(url)
+
+    for _ in range(3):
+        try:
+            await page.wait_for_selector(selector_check, timeout=3000)
+            break
+        except:
+            print("Contenido no cargó, refrescando página...")
+            await page.reload()
+            await asyncio.sleep(2)
     return browser, page
 
 
