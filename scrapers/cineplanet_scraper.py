@@ -7,7 +7,7 @@ from scrapers.utils.browser_utils import (
 )
 from slugify import slugify
 from typing import List, Tuple
-import json, os, asyncio
+import json, os, asyncio, pandas
 
 
 class CineplanetScraper(BaseScraper):
@@ -91,7 +91,7 @@ class CineplanetScraper(BaseScraper):
         self, cities: List[ElementHandle], page: Page
     ) -> Tuple[str, bool]:
         # Imprime la lista de ciudades disponibles
-        await self._print_list_of_items(cities)
+        await self._print_elementhandles(cities)
         # Pedirle al usuario que seleccione una ciudad
         return await self._ask_user_for_input(cities, page, "cine")
 
@@ -99,7 +99,7 @@ class CineplanetScraper(BaseScraper):
         self, cinemas: List[ElementHandle], page: Page
     ) -> Tuple[str, bool]:
         # Imprime la lista de cines disponibles
-        await self._print_list_of_items(cinemas)
+        await self._print_elementhandles(cinemas)
         # Se le pide al usuario seleccionar un cine
         return await self._ask_user_for_input(cinemas, page, "cine")
 
@@ -107,7 +107,7 @@ class CineplanetScraper(BaseScraper):
         self, days: List[ElementHandle], page: Page
     ) -> Tuple[str, bool]:
         # Imprime la lista de días disponibles
-        await self._print_list_of_items(days)
+        await self._print_elementhandles(days)
         # Se le pide al usuario seleccionar un día
         return await self._ask_user_for_input(days, page, "día")
 
@@ -129,20 +129,19 @@ class CineplanetScraper(BaseScraper):
                 )
                 return (item_text, True)
 
-    async def _print_list_of_items(self, items: List[ElementHandle]):
-        # Imprime la lista de items que se le pase
-        length = []
-        for item in items:
-            item_text = (await item.inner_text()).strip()
-            length.append(len(item_text))
-        max_length = max(length)
+    async def _print_elementhandles(self, items: List[ElementHandle]):
+        strings = [(await item.inner_text()).strip() for item in items]
+        self._print_list_of_items(strings)
+
+    def _print_list_of_items(self, items: List[str]):
+        max_length = max(len(item) for item in items)
         width_length = max_length + 4
         for i in range(0, len(items), 3):
             fila = ""
             for j in range(3):
                 idx = i + j
                 if idx < len(items):
-                    item = f"{idx + 1}) {(await items[idx].inner_text()).strip()}"
+                    item = f"{idx + 1}) {items[idx]}"
                     fila += item.ljust(width_length)
             print(fila)
 
@@ -330,6 +329,41 @@ class CineplanetScraper(BaseScraper):
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(movie_data, f, ensure_ascii=False, indent=4)
 
+    def save_excel(self, output_folder, movie_data):
+        file_path = os.path.join(output_folder, f"{slugify(movie_data['title'])}.xlsx")
+        rows = []
+
+        for cinema, funciones in movie_data.get("showtimes", {}).items():
+            for funcion in funciones:
+                dimension = funcion.get("dimension", "")
+                formato = funcion.get("format", "")
+                idioma = funcion.get("language", "")
+
+                for hora_url in funcion.get("showtimes", []):
+                    hora, url = hora_url
+
+                    rows.append(
+                        {
+                            "Título": movie_data.get("title", ""),
+                            "Género": movie_data.get("genre", ""),
+                            "Duración": movie_data.get("running_time", ""),
+                            "Restricción de edad": movie_data.get(
+                                "age_restriction", ""
+                            ),
+                            "Cine": cinema,
+                            "Ciudad": movie_data.get("city", ""),
+                            "Día": movie_data.get("day", ""),
+                            "Dimensión": dimension,
+                            "Formato": formato,
+                            "Idioma": idioma,
+                            "Hora": hora,
+                            "URL": url,
+                        }
+                    )
+
+        df = pandas.DataFrame(rows)
+        df.to_excel(file_path, index=False)
+
     async def message_if_takes_time(self):
         try:
             await asyncio.sleep(5)
@@ -351,12 +385,6 @@ class CineplanetScraper(BaseScraper):
             # Aplicar filtros
             city, cinema, day = await self.apply_filters(page)
 
-            # Presionar el botón "Ver más películas" para cargar toda la cartelera
-            await self.load_all_movies(page)
-
-            # Almacenar cada div que contiene toda la informació de la película
-            movies = await page.query_selector_all(".movies-list--large-item")
-
             # Crear ruta de carpetas
             city_slugify = slugify(city)
             day_slugify = slugify(day, separator="_")
@@ -365,6 +393,24 @@ class CineplanetScraper(BaseScraper):
                 f"data/{city_slugify}/cineplanet/{cinema_slugify}/{day_slugify}"
             )
             os.makedirs(output_folder, exist_ok=True)
+
+            # Preguntar al usuario en qué formato desea guardar la información
+            formats = {"JSON": self.save_json, "Excel": self.save_excel}
+            formats_keys = list(formats.keys())
+            self._print_list_of_items(formats_keys)
+            format_choice = int(
+                input(
+                    "Escoja el número de formato en el que desea guardar la información: "
+                ).strip()
+            )
+            key_chosen = formats_keys[format_choice - 1]
+            function_to_execute = formats[key_chosen]
+
+            # Presionar el botón "Ver más películas" para cargar toda la cartelera
+            await self.load_all_movies(page)
+
+            # Almacenar cada div que contiene toda la informació de la película
+            movies = await page.query_selector_all(".movies-list--large-item")
 
             # Iterar sobre cada película
             for i in range(len(movies)):
@@ -405,8 +451,8 @@ class CineplanetScraper(BaseScraper):
                 await self.scrape_showtimes_data(page, movie_data)
                 wait_message.cancel()
 
-                # Guardar toda la información en un archivo JSON
-                self.save_json(output_folder, movie_data)
+                # Guardar la información según el formato escogido
+                function_to_execute(output_folder, movie_data)
                 print(f"Horarios de {movie_data["title"]} guardados")
 
                 # Vover a la página anterior (cartelera)
