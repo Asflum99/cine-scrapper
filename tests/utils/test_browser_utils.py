@@ -22,6 +22,8 @@ async def test_load_page():
     # Creando mock
     browser_mock = MagicMock()
     page_mock = AsyncMock()
+
+    # Definiendo la función
     browser_mock.new_page = AsyncMock(return_value=page_mock)
 
     # Testeando función
@@ -39,6 +41,8 @@ async def test_fail_load_page():
     # Creando mock
     browser_mock = MagicMock()
     page_mock = AsyncMock()
+
+    # Definiendo la función
     browser_mock.new_page = AsyncMock(return_value=page_mock)
 
     # Forzando error
