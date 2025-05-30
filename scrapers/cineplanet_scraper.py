@@ -1,17 +1,21 @@
 from playwright.async_api import async_playwright, Page, ElementHandle, TimeoutError
 from scrapers.base_scraper import BaseScraper
 from scrapers.utils.browser_utils import (
-    setup_browser_and_load_page,
+    setup_browser,
+    load_page,
     extract_general_information,
     enter_movie_details_page,
 )
 from slugify import slugify
-from typing import List, Tuple
+from typing import List, Tuple, TypeVar
 from rich.text import Text
 from rich.console import Console
+from rich.traceback import install
 import json, os, asyncio, pandas
 
 console = Console()
+install()
+T = TypeVar("T")
 
 
 class CineplanetScraper(BaseScraper):
@@ -23,7 +27,7 @@ class CineplanetScraper(BaseScraper):
             if button and await button.is_visible():
                 await button.click()
         except Exception as e:
-            print("No se encontró botón de cookies o hubo un problema:", e)
+            print("No se encontró botón de cookies o hubo un problema: ", e)
 
     async def apply_filters(self, page: Page) -> List[str]:
         # Selecciona todos los filtros y solo aplica los de "Ciudad", "Cine" y "Día"
@@ -80,61 +84,52 @@ class CineplanetScraper(BaseScraper):
             )
 
             filters = {
-                "Ciudad": self._select_city,
-                "Cine": self._select_cinema,
-                "Día": self._select_day,
+                "Ciudad": "ciudad",
+                "Cine": "cine",
+                "Día": "día",
             }
 
             if specific_filter in filters:
-                return filters[specific_filter](items, page)
+                return self._select_filter(items, page, filters[specific_filter])
 
         # Si no hay ningún filtro que coincida, se retorna nada
         return ("Filters don't matches", False)
 
-    async def _select_city(
-        self, cities: List[ElementHandle], page: Page
-    ) -> Tuple[str, bool]:
-        # Imprime la lista de ciudades disponibles
-        await self._print_elementhandles(cities)
-        # Pedirle al usuario que seleccione una ciudad
-        return await self._ask_user_for_input(cities, page, "cine")
-
-    async def _select_cinema(
-        self, cinemas: List[ElementHandle], page: Page
-    ) -> Tuple[str, bool]:
-        # Imprime la lista de cines disponibles
-        await self._print_elementhandles(cinemas)
-        # Se le pide al usuario seleccionar un cine
-        return await self._ask_user_for_input(cinemas, page, "cine")
-
-    async def _select_day(
-        self, days: List[ElementHandle], page: Page
-    ) -> Tuple[str, bool]:
-        # Imprime la lista de días disponibles
-        await self._print_elementhandles(days)
-        # Se le pide al usuario seleccionar un día
-        return await self._ask_user_for_input(days, page, "día")
-
-    async def _ask_user_for_input(
+    async def _select_filter(
         self, items: List[ElementHandle], page: Page, filter: str
+    ) -> Tuple[str, bool]:
+        # Imprime la lista de items disponibles
+        await self._print_elementhandles(items)
+        # Pedirle al usuario que seleccione un item
+        filter_chosen = await self._ask_user_for_input(items, filter)
+        return await self._execute_user_input(items, page, filter_chosen)
+
+    async def _ask_user_for_input(self, items: List[T], filter: str):
+        while True:
+            try:
+                print()
+                item_chosen = int(input(f"Seleccione el número de {filter}: ").strip())
+                if item_chosen <= 0 or item_chosen > len(items):
+                    raise ValueError
+                return item_chosen
+            except ValueError:
+                print("El número que ingresó es inválido. Ingrese uno válido.")
+                continue
+
+    async def _execute_user_input(
+        self, items: List[ElementHandle], page: Page, item_chosen: int
     ):
         print()
-        item_chosen = int(input(f"Seleccione el número de {filter}: ").strip())
-        print()
         console.rule("")
-        for item in items:
-            if (await item.inner_text()).strip() == (
-                await items[item_chosen - 1].inner_text()
-            ).strip():
-                await item.click()
-                item_text = (await item.inner_text()).strip()
-                await page.wait_for_function(
-                    f"""() => {{
-                        const chips = document.querySelectorAll('.movies-chips--chip');
-                        return Array.from(chips).some(chip => chip.innerText.includes("{item_text}"));
-                    }}"""
-                )
-                return (item_text, True)
+        await items[item_chosen - 1].click()
+        item_text = (await items[item_chosen - 1].inner_text()).strip()
+        await page.wait_for_function(
+            f"""() => {{
+                const chips = document.querySelectorAll('.movies-chips--chip');
+                return Array.from(chips).some(chip => chip.innerText.includes("{item_text}"));
+            }}"""
+        )
+        return (item_text, True)
 
     async def _print_elementhandles(self, items: List[ElementHandle]):
         strings = [(await item.inner_text()).strip() for item in items]
@@ -392,9 +387,8 @@ class CineplanetScraper(BaseScraper):
 
         async with async_playwright() as p:
             # Abrir navegador y página web
-            browser, page = await setup_browser_and_load_page(
-                p, url, 'button:has-text("Aceptar Cookies")'
-            )
+            browser = await setup_browser(p)
+            page = await load_page(browser, url, 'button:has-text("Aceptar Cookies")')
 
             # Aceptar cookies del sitio
             await self.accept_cookies(page)
@@ -415,14 +409,9 @@ class CineplanetScraper(BaseScraper):
             formats = {"JSON": self.save_json, "Excel": self.save_excel}
             formats_keys = list(formats.keys())
             self._print_list_of_items(formats_keys)
-            print()
-            format_choice = int(
-                input(
-                    "Escoja el número de formato en el que desea guardar la información: "
-                ).strip()
-            )
-            key_chosen = formats_keys[format_choice - 1]
-            function_to_execute = formats[key_chosen]
+            format_chosen = await self._ask_user_for_input(formats_keys, "formato")
+            key_chosen = formats_keys[format_chosen - 1]
+            format_to_save = formats[key_chosen]
 
             # Presionar el botón "Ver más películas" para cargar toda la cartelera
             await self.load_all_movies(page)
@@ -478,7 +467,7 @@ class CineplanetScraper(BaseScraper):
                     wait_message.cancel()
 
                     # Guardar la información según el formato escogido
-                    function_to_execute(output_folder, movie_data)
+                    format_to_save(output_folder, movie_data)
                     console.print(
                         f"[green]✅ Horarios de [bold]{movie_data['title']}[/bold] guardados[/green]"
                     )
