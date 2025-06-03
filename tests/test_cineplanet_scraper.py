@@ -1,37 +1,9 @@
 from scrapers.cineplanet_scraper import CineplanetScraper, console
 from playwright.sync_api import sync_playwright
 from unittest.mock import MagicMock, AsyncMock
-import pytest, os
+import pytest
 
 scraper = CineplanetScraper()
-
-
-# Página base para tests y sirve para comprobar URL
-@pytest.fixture
-def page():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto("https://www.cineplanet.com.pe/peliculas")
-        yield page
-        browser.close()
-
-
-# Test para comprobar que la página carga
-def test_site_homepage_loads():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        response = page.goto("https://www.cineplanet.com.pe/")
-
-        # La página respondió satisfactoriamente
-        assert (
-            response is not None
-        ), "La respuesta fue None, puede que el sitio esté caído"
-        assert response.status == 200
-        assert page.url.startswith("https://www.cineplanet.com.pe/")
-
-        browser.close()
 
 
 # Test para comprobar que se aceptan las cookies
@@ -69,15 +41,18 @@ async def test_fail_accept_cookies(capfd):
 # Test para comprobar que se captura correctamente el input del usuario
 @pytest.mark.asyncio
 async def test_ask_user_for_input(monkeypatch):
+    # Inputs
+    inputs = iter(["0", "2"])
+
     # Configurando input()
-    monkeypatch.setattr("builtins.input", lambda _: "1")
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
     # Creando lista
     items_mock = ["Elemento 1", "Elemento 2"]
 
     # Testeando
     result = await scraper._ask_user_for_input(items_mock, "Filtro test")
-    assert result == 1
+    assert result == 2
 
 
 # Test para comprobar la ejecución del input del usuario
@@ -209,31 +184,250 @@ async def test_select_filter(monkeypatch):
 
 
 # Test para comprobar que cargan todas las películas
-def test_scraper_load_all_movies(page):
-    scraper.load_all_movies(page)
+@pytest.mark.asyncio
+async def test_load_all_movies():
+    # Creando mocks
+    page_mock = AsyncMock()
+    button_mock = AsyncMock()
+
+    # Simula que se encuentra el botón de "Ver más"
+    page_mock.wait_for_selector = AsyncMock(return_value=button_mock)
+
+    # Simula visibilidad del botón
+    button_mock.is_visible = AsyncMock(side_effect=[True, False])
+
+    # Testeando
+    await scraper.load_all_movies(page_mock)
+
+    # Haciendo comprobaciones
+    assert page_mock.wait_for_selector.call_count == 2
+    assert button_mock.click.call_count == 1
 
 
-# Test para comprobar que se extrae toda la información general
-def test_scraper_extract_general_information(page):
-    base_path = os.path.dirname(__file__)
-    file_path = os.path.join(base_path, "test_data", "movie_sample.html")
+# Test para comprobar que se scrapean todos los showtimes
+@pytest.mark.asyncio
+async def test_scrape_showtimes_data(monkeypatch):
+    # Creando mocks y variables necesarias
+    movie_data_mock = {}
+    page_mock = AsyncMock()
+    cinema_elements = [1]
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        html_content = f.read()
+    # Configurando funciones
+    page_mock.query_selector_all = AsyncMock(return_value=cinema_elements)
 
-    page.set_content(html_content)
+    # Interceptando funciones
+    async def parse_showtimes_for_cinema_mock(*args, **kwargs):
+        return "test-cinema-name", [{"test-key": "test-value"}]
 
-    movie = page.query_selector(".movies-list--large-item")
-    movie_data = {}
-    scraper.extract_general_information(movie, movie_data)
-    assert movie_data["title"] == "Película de prueba"
-    assert movie_data["genre"] == "Drama"
-    assert movie_data["running_time"] == "1h 50m"
-    assert movie_data["age_restriction"] == "+14."
-    assert movie_data["image_url"] == "https://estaesunaimagen.com.pe"
+    monkeypatch.setattr(
+        scraper, "_parse_showtimes_for_cinema", parse_showtimes_for_cinema_mock
+    )
+
+    # Testeando
+    await scraper.scrape_showtimes_data(page_mock, movie_data_mock)
+    assert movie_data_mock["showtimes"] == {
+        "test-cinema-name": [{"test-key": "test-value"}]
+    }
+    page_mock.query_selector_all.assert_called_with(".film-detail-showtimes--accordion")
 
 
-# Test para comprobar que se extrae toda la información específica
-def test_scraper_extract_specific_information(page):
-    movie_data = {}
-    scraper.extract_info_from_details_page(page, movie_data)
+# Test para comprobar que se parsean los showtimes de cada cine
+@pytest.mark.asyncio
+async def test_parse_showtimes_for_cinema(monkeypatch):
+    # Creando mocks y variables necesarias
+    cine_idx = 0
+    page_mock = AsyncMock()
+    cine_mock = AsyncMock()
+    cinema_elements = [cine_mock]
+
+    # Configurando funciones
+    page_mock.query_selector_all = AsyncMock(return_value=cinema_elements)
+    cine_mock.query_selector_all = AsyncMock(return_value=[1])
+
+    # Interceptando función
+    async def extract_cinema_name_mock(*args, **kwargs):
+        return "cinema-test"
+
+    async def build_showtime_entry_mock(*args, **kwargs):
+        return {"test-key": "test-value"}
+
+    monkeypatch.setattr(scraper, "_extract_cinema_name", extract_cinema_name_mock)
+    monkeypatch.setattr(scraper, "_build_showtime_entry", build_showtime_entry_mock)
+
+    # Testeando
+    result_1, result_2 = await scraper._parse_showtimes_for_cinema(page_mock, cine_idx)
+
+    # Haciendo comprobaciones
+    assert result_1 == "cinema-test"
+    assert result_2 == [{"test-key": "test-value"}]
+    page_mock.query_selector_all.assert_called_with(".film-detail-showtimes--accordion")
+    cine_mock.query_selector_all.assert_called_once()
+
+
+# Test para comprobar que se construye el showtime_entry
+@pytest.mark.asyncio
+async def test_build_showtime_entry(monkeypatch):
+    # Creando mocks y variables necesarias
+    page_mock = AsyncMock()
+    cine_idx = 0
+    container_idx = 0
+    cine_mock = AsyncMock()
+    cinema_elements = [cine_mock]
+    container_mock = AsyncMock()
+    containers = [container_mock]
+    formats_mock = AsyncMock()
+    dimension_mock = AsyncMock()
+    theather_mock = AsyncMock()
+    language_mock = AsyncMock()
+    session_items = [1]
+
+    # Creando función
+    def query_selector_side_effect(selector):
+        if selector == ".sessions-details--formats-dimension":
+            return dimension_mock
+        elif selector == ".sessions-details--formats-theather":
+            return theather_mock
+        elif selector == ".sessions-details--formats-language":
+            return language_mock
+
+    # Configurando funciones
+    page_mock.query_selector_all = AsyncMock(return_value=cinema_elements)
+    cine_mock.query_selector_all = AsyncMock(return_value=containers)
+    container_mock.query_selector = AsyncMock(return_value=formats_mock)
+    formats_mock.query_selector = AsyncMock(side_effect=query_selector_side_effect)
+    dimension_mock.inner_text = AsyncMock(return_value="dimension test")
+    theather_mock.inner_text = AsyncMock(return_value="theather test")
+    language_mock.inner_text = AsyncMock(return_value="language test")
+    container_mock.query_selector_all = AsyncMock(return_value=session_items)
+
+    # Interceptando función
+    async def parse_showtimes_mock(*args, **kwargs):
+        return ["showtime", "link"]
+
+    monkeypatch.setattr(scraper, "_parse_showtimes", parse_showtimes_mock)
+
+    # Testeando
+    result = await scraper._build_showtime_entry(page_mock, cine_idx, container_idx)
+
+    # Haciendo comprobaciones
+    assert result == {
+        "dimension": "dimension test",
+        "format": "theather test",
+        "language": "language test",
+        "showtimes": [["showtime", "link"]],
+    }
+    container_mock.query_selector.assert_called_once()
+    dimension_mock.inner_text.assert_awaited_once()
+    theather_mock.inner_text.assert_awaited_once()
+    language_mock.inner_text.assert_awaited_once()
+    assert page_mock.query_selector_all.call_count > 1
+
+
+# Test para comprobar que se parsea los showtimes
+@pytest.mark.asyncio
+async def test_parse_showtimes(monkeypatch):
+    page_mock = AsyncMock()
+    showtime_idx = 0
+    showtime_button = AsyncMock()
+    showtime_text = "Showtime Test"
+    showtime_item = AsyncMock()
+    session_items = [showtime_item]
+    showtime_item.get_attribute = AsyncMock(return_value="showtime-selector")
+    showtime_item.query_selector = AsyncMock(return_value=showtime_button)
+    showtime_button.inner_text = AsyncMock(return_value=showtime_text)
+
+    async def mock_click_extract_then_go_back(*args, **kwargs):
+        return "Url Test"
+
+    monkeypatch.setattr(
+        scraper, "_click_extract_then_go_back", mock_click_extract_then_go_back
+    )
+
+    result = await scraper._parse_showtimes(session_items, showtime_idx, page_mock)
+
+    assert result == ["Showtime Test", "Url Test"]
+    assert len(result) == 2
+    showtime_item.get_attribute.assert_called_once_with("class")
+    showtime_item.query_selector.assert_called_once_with(".showtime-selector--link")
+    showtime_button.inner_text.assert_awaited_once()
+
+
+# Test para comprobar que se regresa una lista vacía si el selector está deshabilitado
+@pytest.mark.asyncio
+async def test_fail_parse_showtimes():
+    # Creando mocks y variables necesarias
+    page_mock = AsyncMock()
+    showtime_idx = 0
+    showtime_item = AsyncMock()
+    session_items = [showtime_item]
+
+    # Configurando funciones
+    showtime_item.get_attribute = AsyncMock(return_value="showtime-selector_disable")
+
+    # Testeando
+    result = await scraper._parse_showtimes(session_items, showtime_idx, page_mock)
+
+    # Haciendo comprobaciones
+    assert result == []
+    showtime_item.get_attribute.assert_called_once_with("class")
+    showtime_item.query_selector.assert_not_called()
+
+
+# Test para comprobar que se extrae el nombre del cine
+@pytest.mark.asyncio
+async def test_extract_cinema_name():
+    # Creando mocks
+    cine_mock = AsyncMock()
+    cinema_name_mock = AsyncMock()
+
+    # Configurando funciones
+    cine_mock.query_selector = AsyncMock(return_value=cinema_name_mock)
+    cinema_name_mock.inner_text = AsyncMock(return_value="  Nombre test  ")
+
+    # Testeando
+    result = await scraper._extract_cinema_name(cine_mock)
+
+    # Haciendo comprobaciones
+    assert result == "Nombre test"
+
+
+# Test para comprobar que se ingresa a la página de venta, se guarda el enlace y se regresa
+@pytest.mark.asyncio
+async def test_click_extract_then_go_back():
+    # Creando mocks
+    page_mock = AsyncMock()
+    page_mock.url = "test-original"
+    clickable_element_mock = AsyncMock()
+    expected_new_url = "test-url"
+    wait_for_selector_new_page = "test-new-selector"
+    wait_for_selector_old_page = "test-old-selector"
+    confirm_purchase_mock = AsyncMock()
+
+    clickable_element_mock.click = AsyncMock()
+    page_mock.query_selector = AsyncMock(return_value=confirm_purchase_mock)
+    page_mock.go_back = AsyncMock()
+    page_mock.wait_for_function = AsyncMock()
+    page_mock.wait_for_selector = AsyncMock()
+    page_mock.wait_for_url = AsyncMock(
+        side_effect=lambda *args, **kwargs: setattr(page_mock, "url", expected_new_url)
+    )
+
+    # Testeando
+    result = await scraper._click_extract_then_go_back(
+        page_mock,
+        clickable_element_mock,
+        expected_new_url,
+        wait_for_selector_new_page,
+        wait_for_selector_old_page,
+    )
+
+    # Haciendo comprobaciones
+    confirm_purchase_mock.click.assert_called_once()
+    page_mock.wait_for_url.assert_called_with(expected_new_url)
+    page_mock.wait_for_selector.assert_any_call(
+        wait_for_selector_new_page, timeout=10000
+    )
+    page_mock.wait_for_selector.assert_any_call(
+        wait_for_selector_old_page, timeout=10000
+    )
+    assert result == expected_new_url
