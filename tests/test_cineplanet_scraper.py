@@ -1,7 +1,7 @@
 from scrapers.cineplanet_scraper import CineplanetScraper, console
-from playwright.sync_api import sync_playwright
-from unittest.mock import MagicMock, AsyncMock
-import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
+from slugify import slugify
+import pytest, json, pandas, asyncio, os, scrapers.cineplanet_scraper
 
 scraper = CineplanetScraper()
 
@@ -431,3 +431,146 @@ async def test_click_extract_then_go_back():
         wait_for_selector_old_page, timeout=10000
     )
     assert result == expected_new_url
+
+
+# Test para comprobar que se guarda la información en json
+def test_save_json(tmp_path):
+    # Crear carpetas y archivo
+    movie_data = {"title": "Mi Película"}
+    d = tmp_path / "lima/cinema/cinema1/day/"
+    d.mkdir(parents=True)
+    expected_file = d / f"{slugify(movie_data['title'])}.json"
+
+    # Testeando
+    scraper.save_json(d, movie_data)
+
+    # Haciendo comprobaciones
+    assert expected_file.exists()
+    with expected_file.open(encoding="utf-8") as f:
+        contenido = json.load(f)
+    assert contenido == movie_data
+
+
+# Test para comprobar que se guarda la información en excel
+def test_save_excel(tmp_path):
+    # Crear carpetas y archivo
+    movie_data = {
+        "title": "Mi Película",
+        "genre": "Drama",
+        "running_time": "120 min",
+        "age_restriction": "13+",
+        "city": "Lima",
+        "day": "Hoy",
+        "showtimes": {
+            "Cinepolis": [
+                {
+                    "dimension": "2D",
+                    "format": "Digital",
+                    "language": "Español",
+                    "showtimes": [("19:00", "https://example.com/funcion1")],
+                }
+            ]
+        },
+    }
+    d = tmp_path / "lima/cinema/cinema1/day/"
+    d.mkdir(parents=True)
+    expected_file = d / f"{slugify(movie_data['title'])}.xlsx"
+
+    # Testeando
+    scraper.save_excel(d, movie_data)
+    df = pandas.read_excel(expected_file)
+
+    # Haciendo comprobaciones
+    assert expected_file.exists()
+    assert len(df) == 1
+    assert df.loc[0, "Título"] == movie_data["title"]
+
+
+# Test para comprobar que se envían mensajes a la terminal
+@pytest.mark.asyncio
+async def test_message_if_takes_time():
+    with patch("scrapers.cineplanet_scraper.console.print") as mock_print:
+        task = asyncio.create_task(scraper.message_if_takes_time())
+        await asyncio.sleep(6)
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert mock_print.call_count == 1
+        mock_print.assert_called_with(
+            "Espere un momento, es que hay [cyan]muchos horarios[/] por recopilar."
+        )
+
+
+# Test para comprobar que el scrapping está bien preparado
+@pytest.mark.asyncio
+async def test_prepare_scrapping(monkeypatch, tmp_path):
+    # Creando mocks y variables necesarias
+    page_mock = AsyncMock()
+    url = "https://wwww.test.com"
+    
+    # Interceptando funciones
+    async def setup_browser_mock(*args, **kwargs):
+        return "browser-test"
+    
+    async def load_page_mock(browser, url, *args, **kwargs):
+        return page_mock
+    
+    accept_cookies_captured = []
+    async def accept_cookies_mock(*args, **kwargs):
+        accept_cookies_captured.append("cookies aceptadas")
+
+    async def apply_filters_mock(*args, **kwargs):
+        return "Lima", "CP Alcazar", "Hoy Martes"
+    
+    print_list_of_items_captured = []
+    def print_list_of_items_mock(*args, **kwargs):
+        print_list_of_items_captured.append("listas impresas")
+
+    async def ask_user_for_input_mock(*args, **kwargs):
+        return 1
+    
+    load_all_movies_captured = []
+    async def load_all_movies_mock(*args, **kwargs):
+        load_all_movies_captured.append("todas las películas cargadas")
+
+    output_folder_created = []
+    def makedirs_mock(path, exist_ok=True):
+        output_folder_created.append((path, exist_ok))
+
+    def save_json_mock(*args, **kwargs):
+        pass
+
+    def save_excel_mock(*args, **kwargs):
+        pass
+
+    # Aplicando intercepciones
+    monkeypatch.setattr(scrapers.cineplanet_scraper, "setup_browser", setup_browser_mock)
+    monkeypatch.setattr(scrapers.cineplanet_scraper, "load_page", load_page_mock)
+    monkeypatch.setattr(scraper, "accept_cookies", accept_cookies_mock)
+    monkeypatch.setattr(scraper, "apply_filters", apply_filters_mock)
+    monkeypatch.setattr(scraper, "_print_list_of_items", print_list_of_items_mock)
+    monkeypatch.setattr(scraper, "_ask_user_for_input", ask_user_for_input_mock)
+    monkeypatch.setattr(scraper, "load_all_movies", load_all_movies_mock)
+    monkeypatch.setattr(os, "makedirs", makedirs_mock)
+    monkeypatch.setattr(scraper, "save_json", save_json_mock)
+    monkeypatch.setattr(scraper, "save_excel", save_excel_mock)
+
+    # Configurando funciones
+    page_mock.query_selector_all = AsyncMock(return_value="películas")
+
+    # Testeando
+    browser_result, page_result, movies_result, output_folder_result, format_to_save_result = await scraper.prepare_scrapping(url)
+
+    # Haciendo comprobaciones
+    assert browser_result == "browser-test"
+    assert page_result == page_mock
+    assert movies_result == "películas"
+    assert output_folder_result == output_folder_created[0][0]
+    assert output_folder_created[0][1] == True
+    assert format_to_save_result is save_json_mock
+    assert "listas impresas" in print_list_of_items_captured
+    assert "todas las películas cargadas" in load_all_movies_captured
