@@ -191,17 +191,36 @@ async def test_load_all_movies():
     button_mock = AsyncMock()
 
     # Simula que se encuentra el botón de "Ver más"
-    page_mock.wait_for_selector = AsyncMock(return_value=button_mock)
+    page_mock.wait_for_selector = AsyncMock()
+    page_mock.query_selector = AsyncMock(return_value=button_mock)
 
     # Simula visibilidad del botón
     button_mock.is_visible = AsyncMock(side_effect=[True, False])
+    button_mock.click = AsyncMock()
+    page_mock.wait_for_timeout = AsyncMock()
 
     # Testeando
-    await scraper.load_all_movies(page_mock)
+    try:
+        await asyncio.wait_for(scraper.load_all_movies(page_mock), timeout=2)
+    except asyncio.TimeoutError:
+        pytest.fail("El test se colgó (posible bucle infinito)")
 
     # Haciendo comprobaciones
-    assert page_mock.wait_for_selector.call_count == 2
+    assert page_mock.query_selector.call_count == 2
     assert button_mock.click.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_load_all_movies_no_button():
+    page_mock = AsyncMock()
+    page_mock.wait_for_selector = AsyncMock(
+        side_effect=Exception("Botón no encontrado")
+    )
+
+    await scraper.load_all_movies(page_mock)
+
+    # Asegura que no se intentó hacer query ni clic
+    page_mock.query_selector.assert_not_called()
 
 
 # Test para comprobar que se scrapean todos los showtimes
@@ -507,48 +526,51 @@ async def test_message_if_takes_time():
 
 # Test para comprobar que el scrapping está bien preparado
 @pytest.mark.asyncio
-async def test_prepare_scrapping(monkeypatch, tmp_path):
+async def test_prepare_scrapping(monkeypatch):
     # Creando mocks y variables necesarias
     page_mock = AsyncMock()
     url = "https://wwww.test.com"
-    
-    # Interceptando funciones
+
+    # Mockeando funciones
+    scraper.save_json = MagicMock()
+    scraper.save_excel = MagicMock()
+
     async def setup_browser_mock(*args, **kwargs):
         return "browser-test"
-    
-    async def load_page_mock(browser, url, *args, **kwargs):
+
+    async def load_page_mock(*args, **kwargs):
         return page_mock
-    
+
     accept_cookies_captured = []
+
     async def accept_cookies_mock(*args, **kwargs):
         accept_cookies_captured.append("cookies aceptadas")
 
     async def apply_filters_mock(*args, **kwargs):
         return "Lima", "CP Alcazar", "Hoy Martes"
-    
+
     print_list_of_items_captured = []
+
     def print_list_of_items_mock(*args, **kwargs):
         print_list_of_items_captured.append("listas impresas")
 
     async def ask_user_for_input_mock(*args, **kwargs):
         return 1
-    
+
     load_all_movies_captured = []
+
     async def load_all_movies_mock(*args, **kwargs):
         load_all_movies_captured.append("todas las películas cargadas")
 
     output_folder_created = []
+
     def makedirs_mock(path, exist_ok=True):
         output_folder_created.append((path, exist_ok))
 
-    def save_json_mock(*args, **kwargs):
-        pass
-
-    def save_excel_mock(*args, **kwargs):
-        pass
-
     # Aplicando intercepciones
-    monkeypatch.setattr(scrapers.cineplanet_scraper, "setup_browser", setup_browser_mock)
+    monkeypatch.setattr(
+        scrapers.cineplanet_scraper, "setup_browser", setup_browser_mock
+    )
     monkeypatch.setattr(scrapers.cineplanet_scraper, "load_page", load_page_mock)
     monkeypatch.setattr(scraper, "accept_cookies", accept_cookies_mock)
     monkeypatch.setattr(scraper, "apply_filters", apply_filters_mock)
@@ -556,14 +578,18 @@ async def test_prepare_scrapping(monkeypatch, tmp_path):
     monkeypatch.setattr(scraper, "_ask_user_for_input", ask_user_for_input_mock)
     monkeypatch.setattr(scraper, "load_all_movies", load_all_movies_mock)
     monkeypatch.setattr(os, "makedirs", makedirs_mock)
-    monkeypatch.setattr(scraper, "save_json", save_json_mock)
-    monkeypatch.setattr(scraper, "save_excel", save_excel_mock)
 
     # Configurando funciones
     page_mock.query_selector_all = AsyncMock(return_value="películas")
 
     # Testeando
-    browser_result, page_result, movies_result, output_folder_result, format_to_save_result = await scraper.prepare_scrapping(url)
+    (
+        browser_result,
+        page_result,
+        movies_result,
+        output_folder_result,
+        format_to_save_result,
+    ) = await scraper.prepare_scrapping(url)
 
     # Haciendo comprobaciones
     assert browser_result == "browser-test"
@@ -571,6 +597,100 @@ async def test_prepare_scrapping(monkeypatch, tmp_path):
     assert movies_result == "películas"
     assert output_folder_result == output_folder_created[0][0]
     assert output_folder_created[0][1] == True
-    assert format_to_save_result is save_json_mock
+    assert format_to_save_result is scraper.save_json
     assert "listas impresas" in print_list_of_items_captured
     assert "todas las películas cargadas" in load_all_movies_captured
+
+
+# Test para comprobar que las películas se procesan
+@pytest.mark.asyncio
+async def test_process_movies(monkeypatch):
+    original_create_task = asyncio.create_task
+    created_task = None
+
+    class FakeTask:
+        def __init__(self, coro):
+            self.cancel = MagicMock()
+            self._task = original_create_task(coro)
+
+        def __await__(self):
+            return self._task.__await__()
+
+    def create_task_mock(coro, *args, **kwargs):
+        nonlocal created_task
+        created_task = FakeTask(coro)
+        return created_task
+
+    # Creando mocks y variables necesarias
+    page_mock = AsyncMock()
+    filter_mock = AsyncMock()
+    filters = [filter_mock]
+    movies = [1]
+    output_folder = "test"
+    captured_movie_data = {}
+    captured_output = []
+
+    # Configurando funciones
+    page_mock.query_selector_all = AsyncMock(return_value=filters)
+    page_mock.go_back = AsyncMock()
+    page_mock.wait_for_selector = AsyncMock()
+    filter_mock.inner_text = AsyncMock(return_value="lima")
+
+    # Mockeando funciones
+    scraper.load_all_movies = AsyncMock()
+    scraper.scrape_showtimes_data = AsyncMock()
+    scrapers.cineplanet_scraper.enter_movie_details_page = AsyncMock()
+
+    async def extract_general_information_mock(movie, movie_data, *args, **kwargs):
+        movie_data["title"] = "Superman"
+
+    def format_to_save_mock(*args, **kwargs):
+        captured_movie_data.update(args[1])
+
+    monkeypatch.setattr(
+        scrapers.cineplanet_scraper,
+        "extract_general_information",
+        extract_general_information_mock,
+    )
+    monkeypatch.setattr(asyncio, "create_task", create_task_mock)
+    monkeypatch.setattr(console, "print", lambda text: captured_output.append(text))
+
+    # Testeando
+    await scraper.process_movies(page_mock, movies, output_folder, format_to_save_mock)
+
+    # Aserciones opcionales
+    assert captured_movie_data["title"] == "Superman"
+    assert captured_movie_data["city"] == "lima"
+    assert created_task is not None, "No se creó la tarea FakeTask"
+    created_task.cancel.assert_called_once()
+    assert page_mock.query_selector_all.await_count >= 1
+    assert (
+        f"\n[cyan]▶️ Recopilando horarios de proyección de [bold]{captured_movie_data['title']}[/bold][/cyan]"
+        in captured_output
+    )
+
+
+# Test para comprobar que scrapea orquesta bien todo
+@pytest.mark.asyncio
+async def test_scrape():
+    # Creando mocks y variables necesarias
+    browser_mock = AsyncMock()
+    scraper.prepare_scrapping = AsyncMock(
+        return_value=(browser_mock, None, None, None, None)
+    )
+    scraper.process_movies = AsyncMock()
+    url = "https://www.test.com"
+
+    # Configurando mocks y funciones
+    browser_mock.close = AsyncMock()
+
+    # Testeando
+    with patch("scrapers.cineplanet_scraper.console.print") as mock_print:
+        await scraper.scrape(url)
+
+    # Haciendo comprobaciones
+    mock_print.assert_any_call(
+        "\n[bold green]🎉 ¡Todos los horarios han sido guardados exitosamente![/bold green]"
+    )
+    scraper.process_movies.assert_awaited_once()
+    browser_mock.close.assert_awaited_once()
