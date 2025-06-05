@@ -1,5 +1,5 @@
-from playwright.async_api import ElementHandle, Playwright, Browser, Page
-from typing import List, Tuple
+from playwright.async_api import Playwright, Browser, Page, Locator
+from typing import List
 import asyncio
 
 
@@ -9,13 +9,14 @@ async def setup_browser(p: Playwright) -> Browser:
 
 async def load_page(
     browser: Browser, url: str, selector_check: str
-) -> Tuple[Browser, Page]:
+) -> Page:
     page = await browser.new_page()
     await page.goto(url)
+    page_selector = page.locator(selector_check)
 
     for _ in range(3):
         try:
-            await page.wait_for_selector(selector_check, timeout=3000)
+            await page_selector.wait_for(timeout=3000)
             break
         except:
             print("Contenido no cargó, refrescando página...")
@@ -25,20 +26,20 @@ async def load_page(
 
 
 async def extract_general_information(
-    movie: ElementHandle,
+    movie: Locator,
     movie_data: dict,
     title_selector: str,
     movie_extra_info_selector: str,
     image_selector: str,
     splitter: str,
 ):
-    title = await movie.query_selector(title_selector)
+    title = movie.locator(title_selector)
     movie_data["title"] = (await title.inner_text()).strip()
 
     # Extraer género, duración y restricción de edad
     keys = ["genre", "running_time", "age_restriction"]
-    movie_extra_info = await movie.query_selector(movie_extra_info_selector)
-    extras: List[ElementHandle] = (
+    movie_extra_info = movie.locator(movie_extra_info_selector)
+    extras: List[Locator] = (
         (await movie_extra_info.inner_text()).strip().split(splitter)
     )
 
@@ -46,13 +47,13 @@ async def extract_general_information(
         movie_data[key] = extra
 
     # Extraer url de imagen
-    image = await movie.query_selector(image_selector)
+    image = movie.locator(image_selector)
     movie_data["image_url"] = await image.get_attribute("src")
 
 
 async def enter_movie_details_page(
-    movie: ElementHandle, page: Page, button_selector: str, movie_details_selector: str
+    movie: Locator, page: Page, button_selector: str, movie_details_selector: str
 ):
-    button = await movie.query_selector(button_selector)
+    button = movie.locator(button_selector)
     await button.click()
-    await page.wait_for_selector(movie_details_selector)
+    await page.locator(movie_details_selector).wait_for(timeout=3000)
