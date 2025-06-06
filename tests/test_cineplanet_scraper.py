@@ -1,198 +1,309 @@
 from scrapers.cineplanet_scraper import CineplanetScraper, console
+from playwright.async_api import TimeoutError, Locator
 from unittest.mock import MagicMock, AsyncMock, patch
 from slugify import slugify
+from pathlib import Path
 import pytest, json, pandas, asyncio, os, scrapers.cineplanet_scraper
 
 scraper = CineplanetScraper()
 
 
-# Test para comprobar que se aceptan las cookies
+# Tests para comprobar que se aceptan las cookies
 @pytest.mark.asyncio
+@pytest.mark.refactor
 async def test_accept_cookies():
     # Creando mocks
     page_mock = MagicMock()
     button_mock = AsyncMock()
 
     # Definiendo la acción de query_selector
-    page_mock.query_selector = AsyncMock(return_value=button_mock)
+    page_mock.locator = MagicMock(return_value=button_mock)
     button_mock.is_visible = AsyncMock(return_value=True)
+    button_mock.wait_for = AsyncMock()
 
     # Testeando función
     await scraper.accept_cookies(page_mock)
-    button_mock.click.assert_called_once()
+
+    # Haciendo comprobaciones
+    page_mock.locator.assert_called_with("button:has-text('Aceptar Cookies')")
+    button_mock.wait_for.assert_awaited_with(timeout=2000)
+    button_mock.click.assert_awaited_once()
 
 
 @pytest.mark.asyncio
+@pytest.mark.refactor
 async def test_fail_accept_cookies(capfd):
     # Creando mocks
     page_mock = MagicMock()
+    button_mock = AsyncMock()
 
     # Forzando el error de query_selector
-    page_mock.query_selector = AsyncMock(side_effect=Exception("fail"))
+    page_mock.locator = MagicMock(return_value=button_mock)
+    button_mock.wait_for = AsyncMock(side_effect=TimeoutError("fail"))
 
     # Llamando a la función
     await scraper.accept_cookies(page_mock)
 
     # Verificando que se imprimió el mensaje de la excepción
     out, _ = capfd.readouterr()
-    assert "No se encontró botón de cookies o hubo un problema: " in out
+    assert "No se encontró botón de cookies o hubo un problema" in out
+    button_mock.click.assert_not_called()
 
 
-# Test para comprobar que se captura correctamente el input del usuario
+# Tests para comprobar que se captura correctamente el input del usuario
 @pytest.mark.asyncio
-async def test_ask_user_for_input(monkeypatch):
-    # Inputs
-    inputs = iter(["0", "2"])
+@pytest.mark.refactor
+async def test_ask_user_for_input_locator(monkeypatch):
+    # Creando mocks
+    items_mock = MagicMock(spec=Locator)
+    items_mock.count = AsyncMock(return_value=2)
 
-    # Configurando input()
-    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: " 1 ")
 
-    # Creando lista
-    items_mock = ["Elemento 1", "Elemento 2"]
+    result = await scraper._ask_user_for_input(items_mock, "test")
 
-    # Testeando
-    result = await scraper._ask_user_for_input(items_mock, "Filtro test")
+    assert result == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.refactor
+async def test_ask_user_for_input_list(monkeypatch):
+    # Creando mocks
+    items_mock = ["Lima", "Arequipa"]
+
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "1  ")
+
+    result = await scraper._ask_user_for_input(items_mock, "test")
+
+    assert result == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.refactor
+async def test_ask_user_for_input_fail_then_success(monkeypatch):
+    inputs = iter(["5", "2"])
+
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(inputs))
+
+    # Creando mocks
+    items_mock = MagicMock(spec=Locator)
+    items_mock.count = AsyncMock(return_value=3)
+
+    result = await scraper._ask_user_for_input(items_mock, "test")
+
     assert result == 2
 
 
-# Test para comprobar la ejecución del input del usuario
-@pytest.mark.asyncio
-async def test_execute_user_input():
-    # Creando mocks individuales para la lista
-    item_mock_1 = AsyncMock()
-    item_mock_1.inner_text = AsyncMock(return_value="1")
-    item_mock_1.click = AsyncMock()
-
-    item_mock_2 = AsyncMock()
-    item_mock_2.inner_text = AsyncMock(return_value="2")
-    item_mock_2.click = AsyncMock()
-
-    items_mock = [item_mock_1, item_mock_2]
-
-    # Mock de la página principal
-    page_mock = AsyncMock()
-
-    # Configurando funciones
-    item_mock_text = await item_mock_1.inner_text()
-
-    # Testeando
-    result = await scraper._execute_user_input(items_mock, page_mock, 1)
-    item_mock_1.click.assert_awaited_once()
-    item_mock_2.click.assert_not_called()
-    args, _ = page_mock.wait_for_function.call_args
-    assert item_mock_text in args[0]
-    assert result == (item_mock_text, True)
-
-
 # Test para comprobar la impresión de la lista de elementos
-def test_print_list_of_items(monkeypatch):
+@patch("scrapers.cineplanet_scraper.console.print")
+@pytest.mark.refactor
+def test_print_list_with_3_items_should_print_one_row(mock_print):
     # Creando lista de items
-    test_items = ["hola", "chau", "adiós", "comida", "refrigeradora", "computadora"]
-    captured_output = []
-
-    # Configurando print() y pasando lista de items
-    monkeypatch.setattr(console, "print", lambda text: captured_output.append(text))
+    test_items = ["hola", "chau", "adiós"]
 
     # Testeando
     scraper._print_list_of_items(test_items)
 
+    # Obtener textos que se imprimieron
+    args, _ = mock_print.call_args
+    fila = args[0]
+
     # Haciendo comprobaciones
-    assert len(captured_output) == 2
-    assert "1) hola" in captured_output[0].plain
-    assert "4) comida" in captured_output[1].plain
+    assert mock_print.call_count == 1
+    texto = fila.plain
+    assert "1)" in texto and "hola" in texto
+    assert "2)" in texto and "chau" in texto
+    assert "3)" in texto and "adiós" in texto
+
+
+@patch("scrapers.cineplanet_scraper.console.print")
+@pytest.mark.refactor
+def test_print_list_with_3_items_should_print_two_row(mock_print):
+    # Creando lista de items
+    test_items = [
+        "comida",
+        "refrigeradora",
+        "emancipación",
+        "construcción",
+        "destellos",
+        "inmaculada",
+    ]
+
+    # Testeando
+    scraper._print_list_of_items(test_items)
+
+    # Obtener argumentos
+    printed = []
+    for call in mock_print.call_args_list:
+        args, _ = call
+        fila = args[0]
+        printed.append(fila.plain)
+
+    total_text = "\n".join(printed)
+
+    # Haciendo comprobaciones
+    assert mock_print.call_count == 2
+    for idx, item in enumerate(test_items, 1):
+        assert f"{idx})" in total_text
+        assert item in total_text
 
 
 # Test para comprobar la transformación de ElementHandle a str
 @pytest.mark.asyncio
-async def test_print_elementhandles(monkeypatch):
-    # Creando mocks individuales para la lista
-    item_mock_1 = AsyncMock()
-    item_mock_1.inner_text = AsyncMock(return_value="1")
+@pytest.mark.refactor
+async def test_print_locators():
+    # Creando mocks
+    mock_items = MagicMock()
+    mock_items.count = AsyncMock(return_value=2)
 
-    item_mock_2 = AsyncMock()
-    item_mock_2.inner_text = AsyncMock(return_value="2")
+    mock_item_0 = AsyncMock()
+    mock_item_0.inner_text = AsyncMock(return_value=" Hola ")
 
-    items_list = [item_mock_1, item_mock_2]
+    mock_item_1 = AsyncMock()
+    mock_item_1.inner_text = AsyncMock(return_value=" Chau   ")
 
-    # Mockeando _print_list_of_items
-    captured_data = []
-
-    monkeypatch.setattr(
-        scraper, "_print_list_of_items", lambda items: captured_data.append(items)
-    )
+    mock_items.nth = MagicMock(side_effect=[mock_item_0, mock_item_1])
 
     # Testeando
-    await scraper._print_elementhandles(items_list)
+    with patch.object(scraper, "_print_list_of_items") as mock_print:
+        await scraper._print_locators(mock_items)
 
-    # Haciendo comprobaciones
-    assert captured_data[0] == ["1", "2"]
+        # Haciendo comprobaciones
+        mock_print.assert_called_once_with(["Hola", "Chau"])
+        mock_items.count.assert_awaited()
+        mock_items.nth.assert_any_call(0)
+        mock_items.nth.assert_any_call(1)
+        assert mock_items.nth.call_count == 2
+        mock_item_0.inner_text.assert_awaited_once()
+        mock_item_1.inner_text.assert_awaited_once()
 
 
 # Test para comprobar la selección del filtro
 @pytest.mark.asyncio
-async def test_select_filter(monkeypatch):
-    # Creando mocks que se pasarán como argumentos
-    item_mock_1 = AsyncMock()
-    item_mock_2 = AsyncMock()
-    item_mock_3 = AsyncMock()
-    items = [item_mock_1, item_mock_2, item_mock_3]
+@pytest.mark.refactor
+async def test_select_filter():
+    # Creando mocks
+    items_mock = MagicMock()
     page_mock = MagicMock()
-    filter = "ciudad"
+    filter_mock = "ciudad"
+    selected_item_mock = AsyncMock()
 
-    # Configurando funciones
-    captured_data_print_elementhandles = []
+    items_mock.nth = MagicMock(return_value=selected_item_mock)
+    selected_item_mock.inner_text = AsyncMock(return_value="  test ")
+    selected_item_mock.click = AsyncMock()
+    page_mock.wait_for_function = AsyncMock()
 
-    async def mock_print_elementhandles(items):
-        captured_data_print_elementhandles.append(items)
+    with patch.object(scraper, "_print_locators") as mock_print, patch.object(
+        scraper, "_ask_user_for_input", AsyncMock(return_value=1)
+    ) as mock_ask:
+        result = await scraper._select_filter(items_mock, page_mock, filter_mock)
 
-    captured_data_ask_user_for_input = []
+        # Verifica llamadas
+        mock_print.assert_called_once_with(items_mock)
+        mock_ask.assert_called_once_with(items_mock, filter_mock)
+        selected_item_mock.inner_text.assert_awaited_once()
+        selected_item_mock.click.assert_awaited_once()
+        page_mock.wait_for_function.assert_awaited_once()
 
-    async def mock_ask_user_for_input(items, filter):
-        captured_data_ask_user_for_input.append((items, filter))
-        return 5
+        # Verifica resultado
+        assert result == ("test", True)
 
-    captured_data_execute_user_input = []
 
-    async def mock_execute_user_input(items, page, filter_chosen):
-        captured_data_execute_user_input.append((items, page, filter_chosen))
-        return ("result", True)
+# Test para comprobar filtro
+@pytest.mark.asyncio
+@pytest.mark.refactor
+async def test_apply_specific_filter_success():
+    # Creando mocks
+    filter_mock = MagicMock()
+    specific_filter_mock = "Cine"
+    page_mock = MagicMock()
+    title_element_mock = AsyncMock()
+    items_mock = MagicMock()
+
+    def locator_side_effect(selector):
+        if selector == ".movies-filter--filter-category-accordion-trigger h3":
+            return title_element_mock
+        elif selector == ".movies-filter--filter-category-list-item-label":
+            return items_mock
 
     # Mockeando funciones
-    monkeypatch.setattr(scraper, "_print_elementhandles", mock_print_elementhandles)
-    monkeypatch.setattr(scraper, "_ask_user_for_input", mock_ask_user_for_input)
-    monkeypatch.setattr(scraper, "_execute_user_input", mock_execute_user_input)
+    filter_mock.locator = MagicMock(side_effect=locator_side_effect)
+    title_element_mock.inner_text = AsyncMock(return_value="   Cine  ")
+    filter_mock.get_attribute = AsyncMock(return_value="test-class")
+    filter_mock.click = AsyncMock()
+
+    with patch.object(
+        scraper, "_select_filter", MagicMock(return_value=("test", True))
+    ) as mock_filter:
+        result = await scraper._apply_specific_filter(
+            filter_mock, specific_filter_mock, page_mock
+        )
+
+        assert result == ("test", True)
+        assert filter_mock.locator.call_count > 1
+        title_element_mock.inner_text.assert_awaited_once()
+        filter_mock.get_attribute.assert_called_once_with("class")
+        filter_mock.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.refactor
+async def test_apply_specific_filter_first_failure():
+    filter_mock = MagicMock()
+    filter_mock.locator = MagicMock(return_value=None)
+
+    result = await scraper._apply_specific_filter(filter_mock, "test", None)
+
+    assert result == ("Missing filter title", False)
+    filter_mock.locator.assert_called_once_with(
+        ".movies-filter--filter-category-accordion-trigger h3"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.refactor
+async def test_apply_specific_filter_second_failure():
+    # Creando mocks
+    filter_mock = MagicMock()
+    title_element_mock = MagicMock()
+    filter_mock.locator = MagicMock(return_value=title_element_mock)
+    title_element_mock.inner_text = AsyncMock(return_value="no-test")
 
     # Testeando
-    result = await scraper._select_filter(items, page_mock, filter)
+    result = await scraper._apply_specific_filter(filter_mock, "test", None)
 
-    # Haciendo comprobaciones
-    assert result == ("result", True)
-    assert captured_data_print_elementhandles[0] == [
-        item_mock_1,
-        item_mock_2,
-        item_mock_3,
-    ]
-    assert captured_data_ask_user_for_input[0] == (
-        [item_mock_1, item_mock_2, item_mock_3],
-        "ciudad",
+    assert result == ("Filters don't matches", False)
+    filter_mock.locator.assert_called_once_with(
+        ".movies-filter--filter-category-accordion-trigger h3"
     )
-    assert captured_data_execute_user_input[0] == (
-        [item_mock_1, item_mock_2, item_mock_3],
-        page_mock,
-        5,
-    )
+    title_element_mock.inner_text.assert_called_once()
+
+
+# Test para comrpobar que se crea la carpeta
+@pytest.mark.asyncio
+@pytest.mark.refactor
+async def test_create_folder():
+    city_mock = "Lima"
+    day_mock = "Hoy"
+    cinema_mock = "cp alcazar"
+
+    expected_path = Path("data/lima/cineplanet/cp_alcazar/hoy")
+
+    result = await scraper.create_folder(city_mock, cinema_mock, day_mock)
+
+    assert result == expected_path
 
 
 # Test para comprobar que cargan todas las películas
 @pytest.mark.asyncio
+@pytest.mark.refactor
 async def test_load_all_movies():
     # Creando mocks
-    page_mock = AsyncMock()
+    page_mock = MagicMock()
     button_mock = AsyncMock()
 
     # Simula que se encuentra el botón de "Ver más"
-    page_mock.wait_for_selector = AsyncMock()
-    page_mock.query_selector = AsyncMock(return_value=button_mock)
+    page_mock.locator = MagicMock(return_value=button_mock)
 
     # Simula visibilidad del botón
     button_mock.is_visible = AsyncMock(side_effect=[True, False])
@@ -206,21 +317,42 @@ async def test_load_all_movies():
         pytest.fail("El test se colgó (posible bucle infinito)")
 
     # Haciendo comprobaciones
-    assert page_mock.query_selector.call_count == 2
-    assert button_mock.click.call_count == 1
+    page_mock.locator.assert_called_once_with(".movies-list--view-more-button")
+    button_mock.click.assert_called_once()
 
 
 @pytest.mark.asyncio
+@pytest.mark.refactor
 async def test_load_all_movies_no_button():
-    page_mock = AsyncMock()
-    page_mock.wait_for_selector = AsyncMock(
-        side_effect=Exception("Botón no encontrado")
-    )
+    page_mock = MagicMock()
+    button_mock = MagicMock()
+
+    page_mock.locator = MagicMock(return_value=button_mock)
+    button_mock.wait_for = AsyncMock(side_effect=Exception("No button"))
 
     await scraper.load_all_movies(page_mock)
 
-    # Asegura que no se intentó hacer query ni clic
-    page_mock.query_selector.assert_not_called()
+    # Asegura que no se intentó hacer clic
+    button_mock.click.assert_not_called()
+
+
+# Test para comprobar la elección del usuario al escoger el formato
+@pytest.mark.asyncio
+@pytest.mark.refactor
+async def test_ask_format_to_save():
+
+    with patch.object(
+        scraper, "save_json", autospec=True
+    ) as mock_save_json, patch.object(
+        scraper, "save_excel", autospec=True
+    ) as mock_save_excel, patch.object(
+        scraper, "_print_list_of_items"
+    ) as mock_print, patch.object(
+        scraper, "_ask_user_for_input", AsyncMock(return_value=1)
+    ):
+        result = await scraper.ask_format_to_save()
+
+        assert result == mock_save_json
 
 
 # Test para comprobar que se scrapean todos los showtimes
@@ -453,24 +585,26 @@ async def test_click_extract_then_go_back():
 
 
 # Test para comprobar que se guarda la información en json
+@pytest.mark.refactor
 def test_save_json(tmp_path):
-    # Crear carpetas y archivo
+    # 1. Setup
     movie_data = {"title": "Mi Película"}
-    d = tmp_path / "lima/cinema/cinema1/day/"
-    d.mkdir(parents=True)
-    expected_file = d / f"{slugify(movie_data['title'])}.json"
+    output_folder = tmp_path / "lima/cinema/cinema1/day"
+    output_folder.mkdir(parents=True)
+    expected_file = output_folder / f"{slugify(movie_data['title'])}.json"
 
-    # Testeando
-    scraper.save_json(d, movie_data)
+    # 2. Ejecución
+    scraper.save_json(output_folder, movie_data)
 
-    # Haciendo comprobaciones
+    # 3. Verificación
     assert expected_file.exists()
     with expected_file.open(encoding="utf-8") as f:
-        contenido = json.load(f)
-    assert contenido == movie_data
+        content = json.load(f)
+    assert content == movie_data
 
 
 # Test para comprobar que se guarda la información en excel
+@pytest.mark.refactor
 def test_save_excel(tmp_path):
     # Crear carpetas y archivo
     movie_data = {
@@ -491,12 +625,12 @@ def test_save_excel(tmp_path):
             ]
         },
     }
-    d = tmp_path / "lima/cinema/cinema1/day/"
-    d.mkdir(parents=True)
-    expected_file = d / f"{slugify(movie_data['title'])}.xlsx"
+    output_folder = tmp_path / "lima/cinema/cinema1/day/"
+    output_folder.mkdir(parents=True)
+    expected_file = output_folder / f"{slugify(movie_data['title'])}.xlsx"
 
     # Testeando
-    scraper.save_excel(d, movie_data)
+    scraper.save_excel(output_folder, movie_data)
     df = pandas.read_excel(expected_file)
 
     # Haciendo comprobaciones
