@@ -1,18 +1,75 @@
-from scrapers.utils.browser_utils import (
-    setup_browser,
-    load_page,
-    extract_general_information,
-    enter_movie_details_page,
-)
-from playwright.async_api import async_playwright
+from scrapers.base_scraper import BaseScraper
 from unittest.mock import MagicMock, AsyncMock, patch
+from playwright.async_api import async_playwright
 import pytest
+
+
+class DummyScraper(BaseScraper):
+    def scrape(self):
+        pass
+
+
+scraper = DummyScraper()
+
+
+# Test para comprobar la impresión de la lista de elementos
+@patch("scrapers.base_scraper.console.print")
+@pytest.mark.refactor
+def test_print_list_with_3_items_should_print_one_row(mock_print):
+    # Creando lista de items
+    test_items = ["hola", "chau", "adiós"]
+
+    # Testeando
+    scraper.print_list_of_items(test_items)
+
+    # Obtener textos que se imprimieron
+    args, _ = mock_print.call_args
+    fila = args[0]
+
+    # Haciendo comprobaciones
+    assert mock_print.call_count == 1
+    texto = fila.plain
+    assert "1)" in texto and "hola" in texto
+    assert "2)" in texto and "chau" in texto
+    assert "3)" in texto and "adiós" in texto
+
+
+@patch("scrapers.base_scraper.console.print")
+@pytest.mark.refactor
+def test_print_list_with_3_items_should_print_two_row(mock_print):
+    # Creando lista de items
+    test_items = [
+        "comida",
+        "refrigeradora",
+        "emancipación",
+        "construcción",
+        "destellos",
+        "inmaculada",
+    ]
+
+    # Testeando
+    scraper.print_list_of_items(test_items)
+
+    # Obtener argumentos
+    printed = []
+    for call in mock_print.call_args_list:
+        args, _ = call
+        fila = args[0]
+        printed.append(fila.plain)
+
+    total_text = "\n".join(printed)
+
+    # Haciendo comprobaciones
+    assert mock_print.call_count == 2
+    for idx, item in enumerate(test_items, 1):
+        assert f"{idx})" in total_text
+        assert item in total_text
 
 
 @pytest.mark.asyncio
 async def test_setup_browser():
     async with async_playwright() as p:
-        browser = await setup_browser(p)
+        browser = await scraper.setup_browser(p)
         assert browser is not None
         await browser.close()
 
@@ -27,7 +84,7 @@ async def test_load_page():
     browser_mock.new_page = AsyncMock(return_value=page_mock)
 
     # Testeando función
-    result = await load_page(browser_mock, "https://url.com", ".test-selector")
+    result = await scraper.load_page(browser_mock, "https://url.com", ".test-selector")
     browser_mock.new_page.assert_called_once()
     page_mock.goto.assert_called_once_with("https://url.com")
     page_mock.wait_for_selector.assert_called_with(".test-selector", timeout=3000)
@@ -52,7 +109,7 @@ async def test_fail_load_page():
     page_mock.reload = AsyncMock()
 
     with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
-        await load_page(browser_mock, "https://url.com", ".test-selector")
+        await scraper.load_page(browser_mock, "https://url.com", ".test-selector")
 
         # Verifica que hubo reintentos
         assert page_mock.wait_for_selector.call_count == 3
@@ -95,7 +152,7 @@ async def test_extract_general_information():
     movie_mock.query_selector = AsyncMock(side_effect=fake_query_selector)
 
     # Testeando función
-    await extract_general_information(
+    await scraper.extract_general_information(
         movie_mock,
         movie_data,
         title_selector,
@@ -122,6 +179,8 @@ async def test_enter_movie_details_page():
     movie_details_selector = ".test-movie-details-selector"
     movie_mock.query_selector = AsyncMock(return_value=button_mock)
 
-    await enter_movie_details_page(movie_mock, page_mock, button_selector, movie_details_selector)
+    await scraper.enter_movie_details_page(
+        movie_mock, page_mock, button_selector, movie_details_selector
+    )
     button_mock.click.assert_called_once()
     page_mock.wait_for_selector.assert_called_with(movie_details_selector)
