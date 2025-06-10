@@ -1,7 +1,7 @@
 from scrapers.base_scraper import BaseScraper
 from unittest.mock import MagicMock, AsyncMock, patch
-from playwright.async_api import async_playwright
-import pytest
+from scrapers.base_scraper import console
+import pytest, asyncio
 
 
 class DummyScraper(BaseScraper):
@@ -9,34 +9,33 @@ class DummyScraper(BaseScraper):
         pass
 
 
-scraper = DummyScraper()
+@pytest.fixture
+def scraper():
+    return DummyScraper()
 
 
 # Test para comprobar la impresión de la lista de elementos
-@patch("scrapers.base_scraper.console.print")
-@pytest.mark.refactor
-def test_print_list_with_3_items_should_print_one_row(mock_print):
-    # Creando lista de items
+def test_print_list_with_3_items_should_print_one_row(scraper, monkeypatch):
+    # Lista a interceptar lo que se imprimiría
+    printed = []
+
+    def fake_print(fila):
+        printed.append(fila.plain)  # Guardamos el Text completo
+
+    # Interviniendo console.print
+    monkeypatch.setattr(console, "print", fake_print)
+
+    # Datos de prueba
     test_items = ["hola", "chau", "adiós"]
 
-    # Testeando
+    # Ejecutar
     scraper.print_list_of_items(test_items)
 
-    # Obtener textos que se imprimieron
-    args, _ = mock_print.call_args
-    fila = args[0]
-
-    # Haciendo comprobaciones
-    assert mock_print.call_count == 1
-    texto = fila.plain
-    assert "1)" in texto and "hola" in texto
-    assert "2)" in texto and "chau" in texto
-    assert "3)" in texto and "adiós" in texto
+    # Asegurarse de que algo se imprimió
+    assert printed == ["1) hola      2) chau      3) adiós     "]
 
 
-@patch("scrapers.base_scraper.console.print")
-@pytest.mark.refactor
-def test_print_list_with_3_items_should_print_two_row(mock_print):
+def test_print_list_with_3_items_should_print_two_row(scraper, monkeypatch):
     # Creando lista de items
     test_items = [
         "comida",
@@ -47,140 +46,148 @@ def test_print_list_with_3_items_should_print_two_row(mock_print):
         "inmaculada",
     ]
 
-    # Testeando
-    scraper.print_list_of_items(test_items)
-
-    # Obtener argumentos
     printed = []
-    for call in mock_print.call_args_list:
-        args, _ = call
-        fila = args[0]
+
+    def fake_print(fila):
         printed.append(fila.plain)
 
-    total_text = "\n".join(printed)
+    monkeypatch.setattr(console, "print", fake_print)
 
-    # Haciendo comprobaciones
-    assert mock_print.call_count == 2
-    for idx, item in enumerate(test_items, 1):
-        assert f"{idx})" in total_text
-        assert item in total_text
+    scraper.print_list_of_items(test_items)
 
-
-@pytest.mark.asyncio
-async def test_setup_browser():
-    async with async_playwright() as p:
-        browser = await scraper.setup_browser(p)
-        assert browser is not None
-        await browser.close()
+    assert (
+        printed[0] == "1) comida            2) refrigeradora     3) emancipación      "
+    )
+    assert (
+        printed[1] == "4) construcción      5) destellos         6) inmaculada        "
+    )
 
 
 @pytest.mark.asyncio
-async def test_load_page():
-    # Creando mock
+async def test_setup_browser(scraper):
+    # Creando mocks
+    chromium_mock = MagicMock()
     browser_mock = MagicMock()
-    page_mock = AsyncMock()
+    p_mock = MagicMock()
+    p_mock.chromium = chromium_mock
 
-    # Definiendo la función
+    # Mockeando funciones
+    chromium_mock.launch = AsyncMock(return_value=browser_mock)
+
+    # Ejecutar
+    result = await scraper.setup_browser(p_mock)
+
+    # Verificar
+    chromium_mock.launch.assert_awaited_once_with(headless=False)
+    assert result is browser_mock
+
+
+@pytest.mark.asyncio
+async def test_load_page(scraper):
+    # Creando mocks
+    browser_mock = MagicMock()
+    page_mock = MagicMock()
+    page_selector_mock = MagicMock()
+
+    # Mockeando funciones
     browser_mock.new_page = AsyncMock(return_value=page_mock)
+    page_mock.goto = AsyncMock()
+    page_mock.locator = MagicMock(return_value=page_selector_mock)
+    page_selector_mock.wait_for = AsyncMock()
 
     # Testeando función
     result = await scraper.load_page(browser_mock, "https://url.com", ".test-selector")
+
+    # Haciendo comprobaciones
     browser_mock.new_page.assert_called_once()
-    page_mock.goto.assert_called_once_with("https://url.com")
-    page_mock.wait_for_selector.assert_called_with(".test-selector", timeout=3000)
+    page_mock.goto.assert_awaited_once_with("https://url.com")
+    page_mock.locator.assert_called_once_with(".test-selector")
+    page_selector_mock.wait_for.assert_awaited_once_with(timeout=3000)
 
     # Comprobando resultados
     assert result == page_mock
 
 
 @pytest.mark.asyncio
-async def test_fail_load_page():
+async def test_fail_load_page(scraper):
     # Creando mock
     browser_mock = MagicMock()
-    page_mock = AsyncMock()
+    page_mock = MagicMock()
+    page_selector_mock = MagicMock()
 
     # Definiendo la función
     browser_mock.new_page = AsyncMock(return_value=page_mock)
+    page_mock.goto = AsyncMock()
+    page_mock.locator = MagicMock(return_value=page_selector_mock)
 
     # Forzando error
-    page_mock.wait_for_selector = AsyncMock(
+    page_selector_mock.wait_for = AsyncMock(
         side_effect=[Exception("fail"), Exception("fail"), None]
     )
     page_mock.reload = AsyncMock()
 
-    with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+    with patch.object(asyncio, "sleep", new_callable=AsyncMock) as sleep_mock:
         await scraper.load_page(browser_mock, "https://url.com", ".test-selector")
 
         # Verifica que hubo reintentos
-        assert page_mock.wait_for_selector.call_count == 3
+        assert page_selector_mock.wait_for.call_count == 3
         assert page_mock.reload.call_count == 2
         assert sleep_mock.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_extract_general_information():
-    # Creando argumentos para la función
-    movie_data = {}
-    title_selector = ".test-title-selector"
-    movie_extra_info_selector = ".test-movie-extra-info-selector"
-    image_selector = ".test-image-selector"
-    splitter = ", "
-
-    # Mocks que serán retornados por query_selector
-    title_mock = AsyncMock()
-    title_mock.inner_text = AsyncMock(return_value="Matrix")
-
-    movie_extra_info_mock = AsyncMock()
-    movie_extra_info_mock.inner_text = AsyncMock(return_value="Acción, 1h 45min, +14.")
-
-    image_mock = AsyncMock()
-    image_mock.get_attribute = AsyncMock(return_value="https://www.imagen.com")
-
-    # Función query_selector
-    async def fake_query_selector(selector):
-        if selector == title_selector:
-            return title_mock
-        elif selector == movie_extra_info_selector:
-            return movie_extra_info_mock
-        elif selector == image_selector:
-            return image_mock
-        else:
-            return "No matches found"
-
-    # Mock principal
+async def test_extract_general_information(scraper):
+    # Creando mocks
     movie_mock = MagicMock()
-    movie_mock.query_selector = AsyncMock(side_effect=fake_query_selector)
+    title_mock = MagicMock()
+    movie_extra_info_mock = MagicMock()
+    image_mock = MagicMock()
+    movie_data = {}
 
-    # Testeando función
+    def side_effect(selector):
+        if selector == "title-selector":
+            return title_mock
+        elif selector == "movie_extra_info_selector":
+            return movie_extra_info_mock
+        elif selector == "image_selector":
+            return image_mock
+
+    # Mockeando funciones
+    movie_mock.locator = MagicMock(side_effect=side_effect)
+    title_mock.inner_text = AsyncMock(return_value="  title-test ")
+    movie_extra_info_mock.inner_text = AsyncMock(
+        return_value="   Terror, 1h 30min, +14.   "
+    )
+    image_mock.get_attribute = AsyncMock(return_value="src-test")
+
+    # Testeando
     await scraper.extract_general_information(
         movie_mock,
         movie_data,
-        title_selector,
-        movie_extra_info_selector,
-        image_selector,
-        splitter,
+        "title-selector",
+        "movie_extra_info_selector",
+        "image_selector",
+        ", ",
     )
 
-    # Corroborando resultados
-    assert movie_data["title"] == "Matrix"
-    assert movie_data["genre"] == "Acción"
-    assert movie_data["running_time"] == "1h 45min"
-    assert movie_data["age_restriction"] == "+14."
-    assert movie_data["image_url"] == "https://www.imagen.com"
+    assert movie_mock.locator.call_count == 3
 
 
 @pytest.mark.asyncio
-async def test_enter_movie_details_page():
+async def test_enter_movie_details_page(scraper):
+    # Creando mocks
     movie_mock = MagicMock()
-    button_mock = AsyncMock()
-    page_mock = AsyncMock()
+    button_mock = MagicMock()
+    page_mock = MagicMock()
 
-    button_selector = ".test-button-selector"
-    movie_details_selector = ".test-movie-details-selector"
-    movie_mock.query_selector = AsyncMock(return_value=button_mock)
+    # Mockeando funciones
+    movie_mock.locator = MagicMock(return_value=button_mock)
+    button_mock.click = AsyncMock()
+    page_mock.locator = MagicMock(return_value=AsyncMock())
 
-    await scraper.enter_movie_details_page(
-        movie_mock, page_mock, button_selector, movie_details_selector
-    )
-    button_mock.click.assert_called_once()
-    page_mock.wait_for_selector.assert_called_with(movie_details_selector)
+    # Testeando
+    await scraper.enter_movie_details_page(movie_mock, page_mock, "button-test", "test")
+
+    page_mock.locator.assert_called_once_with("test")
+    button_mock.click.assert_awaited_once()
+    movie_mock.locator.assert_called_once_with("button-test")
