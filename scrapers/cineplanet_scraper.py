@@ -7,15 +7,8 @@ from playwright.async_api import (
     Playwright,
 )
 from scrapers.base_scraper import BaseScraper
-from scrapers.utils.browser_utils import (
-    setup_browser,
-    load_page,
-    extract_general_information,
-    enter_movie_details_page,
-)
 from slugify import slugify
 from typing import List, Tuple, Callable
-from rich.text import Text
 from rich.console import Console
 from rich.traceback import install
 from pathlib import Path
@@ -37,15 +30,14 @@ class CineplanetScraper(BaseScraper):
     ) -> str:
         # Ingresa a la página de venta y guarda el URL
         try:
-            previous_url = page.url
             await clickable_element.click()
 
             # Presionar el botón de confirmación de compra en caso aparezca
-            buy_tickets_section = page.locator(
+            tickets_section = page.locator(
                 ".call-to-action_rounded-solid.call-to-action_pink-solid.call-to-action_large"
             )
-            if await buy_tickets_section.is_visible():
-                await buy_tickets_section.click()
+            if await tickets_section.is_visible():
+                await tickets_section.click()
 
             await page.wait_for_url(expected_new_url)
             await page.locator(wait_for_selector_new_page).wait_for(timeout=5000)
@@ -84,73 +76,6 @@ class CineplanetScraper(BaseScraper):
         showtime_data.append(showtime_url)
         return showtime_data
 
-    def _print_list_of_items(self, items: List[str]):
-        print()
-        max_length = max(len(item) for item in items)
-        width_length = max_length + 8
-        for i in range(0, len(items), 3):
-            fila = Text()
-            for j in range(3):
-                idx = i + j
-                if idx < len(items):
-                    item = Text()
-                    item.append(Text(f"{idx + 1}) ", style="cyan bold"))
-                    item.append(Text(f"{items[idx]}", style="none"))
-                    item.pad_right(width_length - len(item.plain))
-                    fila.append(item)
-            console.print(fila)
-
-    async def _print_locators(self, items: Locator):
-        count = await items.count()
-        strings = []
-        for i in range(count):
-            strings.append((await items.nth(i).inner_text()).strip())
-        self._print_list_of_items(strings)
-
-    async def _ask_user_for_input(self, items, filter: str) -> int:
-        while True:
-            try:
-                print()
-
-                if isinstance(items, Locator):
-                    total = await items.count()
-                else:
-                    total = len(items)
-
-                item_chosen = int(input(f"Seleccione el número de {filter}: ").strip())
-                if item_chosen <= 0 or item_chosen > total:
-                    raise ValueError
-                return item_chosen
-            except ValueError:
-                print("El número que ingresó es inválido. Ingrese uno válido.")
-                continue
-
-    async def _select_filter(
-        self, items: Locator, page: Page, filter: str
-    ) -> Tuple[str, bool]:
-        async def execute_user_input(
-            items: Locator, page: Page, item_chosen: int
-        ) -> Tuple[str, bool]:
-            print()
-            console.rule("")
-            items_idx = item_chosen - 1
-            selected_item = items.nth(items_idx)
-            item_text = (await selected_item.inner_text()).strip()
-            await selected_item.click()
-            await page.wait_for_function(
-                f"""() => {{
-                    const chips = document.querySelectorAll('.movies-chips--chip');
-                    return Array.from(chips).some(chip => chip.innerText.includes("{item_text}"));
-                }}"""
-            )
-            return (item_text, True)
-
-        # Imprime la lista de items disponibles
-        await self._print_locators(items)
-        # Pedirle al usuario que seleccione un item
-        filter_chosen = await self._ask_user_for_input(items, filter)
-        return await execute_user_input(items, page, filter_chosen)
-
     async def _build_showtime_entry(
         self, page: Page, cine_idx: int, container_idx: int
     ) -> dict:
@@ -185,49 +110,19 @@ class CineplanetScraper(BaseScraper):
             container = containers.nth(container_idx)
             session_items = container.locator(".sessions-details--session-item")
 
-            showtime_and_link = await self._parse_showtimes(
+            showtime_text_and_link = await self._parse_showtimes(
                 session_items, showtime_idx, page
             )
-            if showtime_and_link == []:
+            if showtime_text_and_link == []:
                 continue
 
-            showtimes.append(showtime_and_link)
+            showtimes.append(showtime_text_and_link)
         return {
             "dimension": dimension,
             "format": theather,
             "language": language,
             "showtimes": showtimes,
         }
-
-    async def _apply_specific_filter(
-        self,
-        filter: Locator,
-        specific_filter: str,
-        page: Page,
-    ) -> Tuple[str, bool]:
-        title_element = filter.locator(
-            ".movies-filter--filter-category-accordion-trigger h3"
-        )
-        if not title_element:
-            return ("Missing filter title", False)
-        if (await title_element.inner_text()).strip() == specific_filter:
-            classes = await filter.get_attribute("class")
-            # Verificar si el acordeón del filtro está expandido
-            if "accordion_expanded" not in classes:
-                await filter.click()
-
-            items = filter.locator(".movies-filter--filter-category-list-item-label")
-
-            filters = {
-                "Ciudad": "ciudad",
-                "Cine": "cine",
-                "Día": "día",
-            }
-
-            return self._select_filter(items, page, filters[specific_filter])
-
-        # Si no hay ningún filtro que coincida, se retorna nada
-        return ("Filters don't matches", False)
 
     async def _parse_showtimes_for_cinema(
         self, page: Page, cine_idx: int
@@ -258,44 +153,6 @@ class CineplanetScraper(BaseScraper):
                 await button.click()
         except TimeoutError:
             print("No se encontró botón de cookies o hubo un problema")
-
-    async def apply_filters(self, page: Page) -> List[str]:
-        # Selecciona todos los filtros y solo aplica los de "Ciudad", "Cine" y "Día"
-        filters = page.locator(".movies-filter--filter-category-accordion")
-        count = await filters.count()
-        city_filter_added = False
-        cinema_filter_added = False
-        day_filter_added = False
-        data: List = []
-        for i in range(count):
-            if not city_filter_added:
-                # Aplica el filtro de "Ciudad"
-                raw_data = await self._apply_specific_filter(
-                    filters.nth(i), "Ciudad", page
-                )
-                city, city_filter_added = await raw_data
-                if city_filter_added:
-                    data.append(city)
-                    continue
-            if not cinema_filter_added:
-                # Aplica el filtro de "Cine"
-                raw_data = await self._apply_specific_filter(
-                    filters.nth(i), "Cine", page
-                )
-                cinema, cinema_filter_added = await raw_data
-                if cinema_filter_added:
-                    data.append(cinema)
-                    continue
-            if not day_filter_added:
-                # Aplica el filtro de "Día"
-                raw_data = await self._apply_specific_filter(
-                    filters.nth(i), "Día", page
-                )
-                day, day_filter_added = await raw_data
-                if day_filter_added:
-                    data.append(day)
-                    break
-        return data
 
     async def create_folder(self, city: str, cinema: str, day: str) -> Path:
         city_slugify = slugify(city)
@@ -393,8 +250,8 @@ class CineplanetScraper(BaseScraper):
     async def ask_format_to_save(self) -> Callable:
         formats = {"JSON": self.save_json, "Excel": self.save_excel}
         formats_keys = list(formats.keys())
-        self._print_list_of_items(formats_keys)
-        format_chosen = await self._ask_user_for_input(formats_keys, "formato")
+        self.print_list_of_items(formats_keys)
+        format_chosen = await self.ask_user_for_input(formats_keys, "formato")
         key_chosen = formats_keys[format_chosen - 1]
         format_to_save = formats[key_chosen]
         return format_to_save
@@ -403,14 +260,20 @@ class CineplanetScraper(BaseScraper):
         self, p: Playwright, url: str
     ) -> Tuple[Browser, Page, Locator, str, Callable]:
         # Abrir navegador y página web
-        browser = await setup_browser(p)
-        page = await load_page(browser, url, 'button:has-text("Aceptar Cookies")')
+        browser = await self.setup_browser(p)
+        page = await self.load_page(browser, url, 'button:has-text("Aceptar Cookies")')
 
         # Aceptar cookies del sitio
         await self.accept_cookies(page)
 
         # Aplicar filtros
-        city, cinema, day = await self.apply_filters(page)
+        city, cinema, day = await self.apply_filters(
+            page,
+            ["Ciudad", "Cine", "Día"], # Lista de filtros a aplicar
+            ".movies-filter--filter-category-accordion-trigger h3", # Selector del título del filtro
+            ".movies-filter--filter-category-accordion", # Acordeón de los filtros con sus opciones
+            ".movies-filter--filter-category-list-item-label" # Cada opción del acordeón de filtros
+        )
 
         # Crear ruta de carpetas
         output_folder = await self.create_folder(city, cinema, day)
@@ -438,7 +301,7 @@ class CineplanetScraper(BaseScraper):
             movie = movies.nth(i)
             movie_data = {}
 
-            await extract_general_information(
+            await self.extract_general_information(
                 movie,
                 movie_data,
                 ".movies-list--large-movie-description-title",
@@ -463,10 +326,10 @@ class CineplanetScraper(BaseScraper):
                 f"\n[cyan]▶️ Recopilando horarios de proyección de [bold]{movie_data['title']}[/bold][/cyan]"
             )
 
-            await enter_movie_details_page(
+            await self.enter_movie_details_page(
                 movie,
                 page,
-                ".movie-info-details--second-button",
+                ".movie-info-details--first-button-wrapper", # Botón de compra de entradas
                 ".movie-details--info",
             )
 

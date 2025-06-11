@@ -1,5 +1,5 @@
 from scrapers.cineplanet_scraper import CineplanetScraper, console
-from playwright.async_api import TimeoutError, Locator
+from playwright.async_api import TimeoutError
 from unittest.mock import MagicMock, AsyncMock, patch
 from slugify import slugify
 from pathlib import Path
@@ -49,135 +49,6 @@ async def test_fail_accept_cookies(scraper, capfd):
     out, _ = capfd.readouterr()
     assert "No se encontró botón de cookies o hubo un problema" in out
     button_mock.click.assert_not_called()
-
-
-# Tests para comprobar que se captura correctamente el input del usuario
-@pytest.mark.asyncio
-async def test_ask_user_for_input_locator(scraper, monkeypatch):
-    # Creando mocks
-    items_mock = MagicMock(spec=Locator)
-    items_mock.count = AsyncMock(return_value=2)
-
-    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: " 1 ")
-
-    result = await scraper._ask_user_for_input(items_mock, "test")
-
-    assert result == 1
-
-
-@pytest.mark.asyncio
-async def test_ask_user_for_input_list(scraper, monkeypatch):
-    # Creando mocks
-    items_mock = ["Lima", "Arequipa"]
-
-    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "1  ")
-
-    result = await scraper._ask_user_for_input(items_mock, "test")
-
-    assert result == 1
-
-
-@pytest.mark.asyncio
-async def test_ask_user_for_input_fail_then_success(scraper, monkeypatch):
-    inputs = iter(["5", "2"])
-
-    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(inputs))
-
-    # Creando mocks
-    items_mock = MagicMock(spec=Locator)
-    items_mock.count = AsyncMock(return_value=3)
-
-    result = await scraper._ask_user_for_input(items_mock, "test")
-
-    assert result == 2
-
-
-# Test para comprobar la transformación de ElementHandle a str
-@pytest.mark.asyncio
-async def test_print_locators(scraper):
-    # Creando mocks
-    mock_items = MagicMock()
-    mock_items.count = AsyncMock(return_value=2)
-
-    mock_item_0 = AsyncMock()
-    mock_item_0.inner_text = AsyncMock(return_value=" Hola ")
-
-    mock_item_1 = AsyncMock()
-    mock_item_1.inner_text = AsyncMock(return_value=" Chau   ")
-
-    mock_items.nth = MagicMock(side_effect=[mock_item_0, mock_item_1])
-
-    # Testeando
-    with patch.object(scraper, "print_list_of_items") as mock_print:
-        await scraper._print_locators(mock_items)
-
-        # Haciendo comprobaciones
-        mock_print.assert_called_once_with(["Hola", "Chau"])
-        mock_items.count.assert_awaited()
-        mock_items.nth.assert_any_call(0)
-        mock_items.nth.assert_any_call(1)
-        assert mock_items.nth.call_count == 2
-        mock_item_0.inner_text.assert_awaited_once()
-        mock_item_1.inner_text.assert_awaited_once()
-
-
-# Test para comprobar la selección del filtro
-@pytest.mark.asyncio
-async def test_select_filter(scraper):
-    # Creando mocks
-    items_mock = MagicMock()
-    page_mock = MagicMock()
-    filter_mock = "ciudad"
-    selected_item_mock = AsyncMock()
-
-    items_mock.nth = MagicMock(return_value=selected_item_mock)
-    selected_item_mock.inner_text = AsyncMock(return_value="  test ")
-    selected_item_mock.click = AsyncMock()
-    page_mock.wait_for_function = AsyncMock()
-
-    with patch.object(scraper, "_print_locators") as mock_print, patch.object(
-        scraper, "_ask_user_for_input", AsyncMock(return_value=1)
-    ) as mock_ask:
-        result = await scraper._select_filter(items_mock, page_mock, filter_mock)
-
-        # Verifica llamadas
-        mock_print.assert_called_once_with(items_mock)
-        mock_ask.assert_called_once_with(items_mock, filter_mock)
-        selected_item_mock.inner_text.assert_awaited_once()
-        selected_item_mock.click.assert_awaited_once()
-        page_mock.wait_for_function.assert_awaited_once()
-
-        # Verifica resultado
-        assert result == ("test", True)
-
-
-# Test para comprobar que se aplica el filtro
-@pytest.mark.asyncio
-async def test_apply_filters(scraper):
-    # Creando mocks
-    page_mock = MagicMock()
-    filters_mock = MagicMock()
-
-    # Mockeando funciones
-    page_mock.locator = MagicMock(return_value=filters_mock)
-    filters_mock.count = AsyncMock(return_value=3)
-    filters_mock.nth = MagicMock()
-
-    def side_effect(filter_element, name, page):
-        return (name, True)
-
-    # Testeando
-    with patch.object(
-        scraper, "_apply_specific_filter", side_effect=side_effect
-    ) as apply_filter_mock:
-        result = await scraper.apply_filters(page_mock)
-
-        assert result == ["Ciudad", "Cine", "Día"]
-        page_mock.locator.assert_called_with(
-            ".movies-filter--filter-category-accordion"
-        )
-        filters_mock.count.assert_awaited_once()
-        assert apply_filter_mock.await_count == 3
 
 
 # Test para comprobar que se construye el showtime_entry
@@ -350,7 +221,7 @@ async def test_process_movies(scraper):
         scraper.enter_movie_details_page.assert_awaited_once_with(
             movie_mock,
             page_mock,
-            ".movie-info-details--second-button",
+            ".movie-info-details--first-button-wrapper",
             ".movie-details--info",
         )
         scraper.scrape_showtimes_data.assert_awaited_once()
@@ -367,10 +238,10 @@ async def test_prepare_scrapping(scraper):
     p_mock = MagicMock()
     format_mock = MagicMock()
 
-    def apply_filters_side_effect(page_mock):
+    def apply_filters_side_effect(*args, **kwargs):
         return ("Lima", "CP Alcazar", "Hoy Lunes")
 
-    def create_folder_side_effect(city, cinema, day):
+    def create_folder_side_effect(*args, **kwargs):
         return Path("test/test_folder")
 
     with patch.object(
@@ -398,7 +269,13 @@ async def test_prepare_scrapping(scraper):
 
         setup_broweser_mock.assert_awaited_once_with(p_mock)
         accept_cookies_mock.assert_awaited_once_with(page_mock)
-        apply_filters_mock.assert_awaited_once_with(page_mock)
+        apply_filters_mock.assert_awaited_once_with(
+            page_mock,
+            ["Ciudad", "Cine", "Día"],
+            ".movies-filter--filter-category-accordion-trigger h3",
+            ".movies-filter--filter-category-accordion",
+            ".movies-filter--filter-category-list-item-label",
+        )
         create_folder_mock.assert_awaited_once_with("Lima", "CP Alcazar", "Hoy Lunes")
         ask_format_mock.assert_awaited_once()
         load_all_movies_mock.assert_awaited_once_with(page_mock)
@@ -666,77 +543,10 @@ async def test_ask_format_to_save(scraper):
     ) as mock_save_excel, patch.object(
         scraper, "print_list_of_items"
     ) as mock_print, patch.object(
-        scraper, "_ask_user_for_input", AsyncMock(return_value=1)
+        scraper, "ask_user_for_input", AsyncMock(return_value=1)
     ):
         result = await scraper.ask_format_to_save()
         assert result == mock_save_json
-
-
-# Test para comprobar filtro
-@pytest.mark.asyncio
-async def test_apply_specific_filter_success(scraper):
-    # Creando mocks
-    filter_mock = MagicMock()
-    specific_filter_mock = "Cine"
-    page_mock = MagicMock()
-    title_element_mock = AsyncMock()
-    items_mock = MagicMock()
-
-    def locator_side_effect(selector):
-        if selector == ".movies-filter--filter-category-accordion-trigger h3":
-            return title_element_mock
-        elif selector == ".movies-filter--filter-category-list-item-label":
-            return items_mock
-
-    # Mockeando funciones
-    filter_mock.locator = MagicMock(side_effect=locator_side_effect)
-    title_element_mock.inner_text = AsyncMock(return_value="   Cine  ")
-    filter_mock.get_attribute = AsyncMock(return_value="test-class")
-    filter_mock.click = AsyncMock()
-
-    with patch.object(
-        scraper, "_select_filter", MagicMock(return_value=("test", True))
-    ) as mock_filter:
-        result = await scraper._apply_specific_filter(
-            filter_mock, specific_filter_mock, page_mock
-        )
-
-        assert result == ("test", True)
-        assert filter_mock.locator.call_count > 1
-        title_element_mock.inner_text.assert_awaited_once()
-        filter_mock.get_attribute.assert_called_once_with("class")
-        filter_mock.click.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_apply_specific_filter_first_failure(scraper):
-    filter_mock = MagicMock()
-    filter_mock.locator = MagicMock(return_value=None)
-
-    result = await scraper._apply_specific_filter(filter_mock, "test", None)
-
-    assert result == ("Missing filter title", False)
-    filter_mock.locator.assert_called_once_with(
-        ".movies-filter--filter-category-accordion-trigger h3"
-    )
-
-
-@pytest.mark.asyncio
-async def test_apply_specific_filter_second_failure(scraper):
-    # Creando mocks
-    filter_mock = MagicMock()
-    title_element_mock = MagicMock()
-    filter_mock.locator = MagicMock(return_value=title_element_mock)
-    title_element_mock.inner_text = AsyncMock(return_value="no-test")
-
-    # Testeando
-    result = await scraper._apply_specific_filter(filter_mock, "test", None)
-
-    assert result == ("Filters don't matches", False)
-    filter_mock.locator.assert_called_once_with(
-        ".movies-filter--filter-category-accordion-trigger h3"
-    )
-    title_element_mock.inner_text.assert_called_once()
 
 
 # Test para comrpobar que se crea la carpeta
